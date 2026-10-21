@@ -7,3 +7,4 @@ xarray
 netcdf4
 requests
 streamlit-autorefresh
+plotly
