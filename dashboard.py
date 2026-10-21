@@ -190,7 +190,7 @@ st.set_page_config(
     page_title="Earth Emergency Command",
     page_icon="🌍",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 CSS = """
@@ -260,12 +260,43 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 
 .stTabs [data-baseweb="tab-list"] {
     gap: 8px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: thin;
 }
 
 .stTabs [data-baseweb="tab"] {
     border-radius: 12px;
     padding-left: 16px;
     padding-right: 16px;
+    white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+    [data-testid="stAppViewBlockContainer"] {
+        padding: 1rem 0.75rem 2rem;
+    }
+    .hero {
+        padding: 22px 14px;
+        border-radius: 18px;
+    }
+    .earth-badge { font-size: 54px; }
+    .hero h1 { font-size: 28px; }
+    .hero p { font-size: 15px; }
+    h1 { font-size: 1.65rem !important; }
+    h2 { font-size: 1.35rem !important; }
+    h3 { font-size: 1.1rem !important; }
+    .stTabs [data-baseweb="tab"] {
+        padding: 8px 10px;
+        font-size: 0.8rem;
+    }
+    [data-testid="stPlotlyChart"] {
+        width: 100% !important;
+        overflow-x: hidden;
+    }
+    [data-testid="stDataFrame"] { max-width: 100%; }
+    [data-testid="stButton"] button,
+    [data-testid="stLinkButton"] a { width: 100%; }
 }
 </style>
 """
@@ -1421,6 +1452,61 @@ def show_eonet_connection_help(message):
     st.caption("EONET is a separate NASA service and does not use the FIRMS MAP_KEY.")
 
 
+def show_eonet_event_browser(events, key="eonet_events"):
+    """Compact, filterable EONET event list that works well on narrow screens."""
+    if events is None or events.empty:
+        st.info("No EONET event records to show.")
+        return
+
+    hazards = ["All event types"] + sorted(events["hazard"].dropna().astype(str).unique().tolist())
+    selected_hazard = st.selectbox("Event type", hazards, key=f"{key}_hazard")
+    search = st.text_input("Search event title or location", key=f"{key}_search").strip().casefold()
+
+    filtered = events.copy()
+    if selected_hazard != "All event types":
+        filtered = filtered[filtered["hazard"] == selected_hazard]
+    if search:
+        searchable = filtered[[c for c in ["title", "categories", "description", "lat", "lon"] if c in filtered.columns]]
+        mask = searchable.fillna("").astype(str).agg(" ".join, axis=1).str.casefold().str.contains(search, regex=False)
+        filtered = filtered.loc[mask]
+
+    if "date" in filtered.columns:
+        filtered = filtered.sort_values("date", ascending=False, na_position="last")
+    st.caption(f"{len(filtered):,} matching event records")
+    if filtered.empty:
+        st.info("No events match those filters.")
+        return
+
+    page_size = st.selectbox("Events per page", [10, 20, 50], index=0, key=f"{key}_page_size")
+    page_count = max(1, (len(filtered) + page_size - 1) // page_size)
+    page_options = [f"Page {i + 1} of {page_count}" for i in range(page_count)]
+    page_label = st.selectbox("Page", page_options, key=f"{key}_page_{len(filtered)}_{page_size}")
+    page_number = page_options.index(page_label)
+    first = page_number * page_size
+    visible = filtered.iloc[first:first + page_size]
+
+    for _, event in visible.iterrows():
+        title = str(event.get("title") or "Untitled NASA EONET event")
+        with st.expander(f"{title} · {event.get('hazard', 'Other')}"):
+            details = [str(event.get("categories") or "Uncategorized")]
+            event_date = event.get("date")
+            if pd.notna(event_date):
+                details.append(pd.Timestamp(event_date).strftime("%d %b %Y UTC"))
+            lat, lon = event.get("lat"), event.get("lon")
+            if pd.notna(lat) and pd.notna(lon):
+                details.append(f"{float(lat):.3f}, {float(lon):.3f}")
+            st.caption(" · ".join(details))
+            description = event.get("description")
+            if isinstance(description, str) and description.strip():
+                st.write(description)
+            sources = event.get("sources")
+            if isinstance(sources, str) and sources.strip():
+                st.caption(f"Sources: {sources}")
+            event_url = event.get("link")
+            if isinstance(event_url, str) and event_url.startswith("https://"):
+                st.link_button("Open NASA event record", event_url, width="stretch")
+
+
 @st.cache_data(show_spinner=False, ttl=600)
 def fetch_firms_api(map_key, source="VIIRS_SNPP_NRT", day_range=1):
     """Fetch recent global fire detections from NASA FIRMS area CSV API."""
@@ -1843,7 +1929,7 @@ with tab_global_map:
     map_style = st.radio(
         "Map style",
         ["Globe", "Flat world"],
-        horizontal=True,
+        horizontal=False,
         key="global_map_style"
     )
 
@@ -1884,14 +1970,13 @@ with tab_global_map:
                         hover_data=["categories", "date"],
                         color_discrete_map=HAZARD_COLORS,
                         projection=projection,
-                        height=600,
+                        height=460,
                     )
                     fig = make_geo_fig(fig)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, width="stretch", config={"responsive": True, "displaylogo": False})
                 else:
-                    st.info("These events have no coordinates to plot. Their event records are shown below.")
-
-                st.dataframe(map_df, width="stretch")
+                    st.info("No coordinates are available for these filtered events, so they appear in the event list instead of on the map.")
+                show_eonet_event_browser(map_df, key="global_map_eonet")
 
     elif layer == "FIRMS Fires":
         if firms_df is None:
@@ -2261,6 +2346,7 @@ with tab_atmosphere:
 
 with tab_live_events:
     st.markdown("## 🚨 Live NASA EONET Events")
+    st.caption("Browse NASA’s current open natural-event records. Use the filters and page controls to find events on mobile or desktop.")
 
     if live_events is None:
         show_eonet_connection_help(live_error)
@@ -2270,27 +2356,24 @@ with tab_live_events:
         st.info("No live events found.")
 
     else:
-        hazards = sorted(live_events["hazard"].unique().tolist())
-
-        selected_hazards = st.multiselect(
-            "Filter event types",
-            hazards,
-            default=hazards,
-            key="live_event_filter"
-        )
-
-        table_df = live_events[live_events["hazard"].isin(selected_hazards)].copy()
-        table_df = table_df.sort_values("date", ascending=False)
-
-        st.dataframe(table_df, width="stretch")
-
-        st.markdown("### Event Links")
-
-        for _, row in table_df.head(30).iterrows():
-            st.markdown(
-                f"- [{row['title']}]({row['link']}) — "
-                f"{row['hazard']} — {row['date']}"
+        mapped_events = live_events.dropna(subset=["lat", "lon"])
+        if not mapped_events.empty:
+            fig = px.scatter_geo(
+                mapped_events,
+                lat="lat",
+                lon="lon",
+                color="hazard",
+                hover_name="title",
+                hover_data=[c for c in ["categories", "date"] if c in mapped_events.columns],
+                color_discrete_map=HAZARD_COLORS,
+                projection="natural earth",
+                height=420,
             )
+            fig = make_geo_fig(fig)
+            st.plotly_chart(fig, width="stretch", config={"responsive": True, "displaylogo": False})
+        else:
+            st.info("These event records do not currently include coordinates for a map.")
+        show_eonet_event_browser(live_events, key="live_events_browser")
 
 
 # ============================================================
