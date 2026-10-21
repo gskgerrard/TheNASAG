@@ -355,31 +355,28 @@ def scatter_geo_safe(data_frame, **kwargs):
 
 
 def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
-    """Render FIRMS detections as layered thermal hotspots, not a color ramp."""
+    """Render FIRMS detections as a light, single-layer map of normal markers."""
     df = data_frame.dropna(subset=["lat", "lon"]).copy()
     if df.empty:
         return scatter_geo_safe(df, projection=projection, height=height)
 
     total_detections = len(df)
-    if total_detections > 12000:
-        # Keep every strongest hotspot, then add a stable spatial sample so a
-        # global NRT feed stays responsive without changing the source table.
+    map_point_limit = 3000
+    if total_detections > map_point_limit:
+        # Render the strongest half and a stable world-wide sample in one
+        # Scattergeo trace. The full dataset remains available in the table.
         if "frp" in df.columns:
             ranked = df.assign(__sample_rank=pd.to_numeric(df["frp"], errors="coerce").fillna(0))
-            strongest = ranked.nlargest(3000, "__sample_rank").drop(columns="__sample_rank")
+            strongest = ranked.nlargest(map_point_limit // 2, "__sample_rank").drop(columns="__sample_rank")
         else:
-            strongest = df.iloc[0:0]
+            strongest = df.iloc[:map_point_limit // 2]
         remainder = df.drop(index=strongest.index)
-        sample_count = 12000 - len(strongest)
+        sample_count = map_point_limit - len(strongest)
         random_sample = remainder.sample(n=min(sample_count, len(remainder)), random_state=17)
         df = pd.concat([strongest, random_sample]).drop_duplicates().copy()
 
     frp = pd.to_numeric(df.get("frp", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0).clip(lower=0)
-    log_frp = np.log1p(frp)
-    peak = float(log_frp.max()) if not log_frp.empty else 0.0
-    strength = log_frp / peak if peak > 0 else pd.Series(0.35, index=df.index)
     df["__frp"] = frp
-    df["__strength"] = strength
 
     custom_columns = [c for c in ["__frp", "confidence", "date", "acq_date", "acq_time", "satellite", "daynight"] if c in df.columns]
     custom_data = df[custom_columns].to_numpy() if custom_columns else None
@@ -398,25 +395,30 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
     hover_lines.append("Lat/Lon: %{lat:.2f}, %{lon:.2f}<extra></extra>")
     hovertemplate = "<br>".join(hover_lines)
 
-    fig = go.Figure()
-    # Small, restrained halos prevent dense VIIRS pixels from painting whole
-    # regions as if they were continuous fires. FRP still controls hotspot size.
-    traces = [
-        ("rgba(255, 35, 0, 0.045)", 8 + 9 * strength),
-        ("rgba(255, 72, 0, 0.14)", 4.5 + 5 * strength),
-        ("rgba(255, 174, 32, 0.82)", 2.5 + 3.5 * strength),
-        ("rgba(255, 248, 203, 0.96)", 1.2 + 1.0 * strength),
-    ]
-    for color, sizes in traces:
-        fig.add_trace(go.Scattergeo(
-            lat=df["lat"],
-            lon=df["lon"],
-            mode="markers",
-            marker=dict(size=sizes, color=color, line=dict(width=0)),
-            customdata=custom_data,
-            hovertemplate=hovertemplate,
-            showlegend=False,
-        ))
+    fig = go.Figure(go.Scattergeo(
+        lat=df["lat"],
+        lon=df["lon"],
+        mode="markers",
+        marker=(
+            dict(
+                size=5,
+                color=frp,
+                cmin=0,
+                cmax=max(float(frp.quantile(0.98)), 1.0),
+                colorscale=[[0, "#ffd166"], [0.35, "#ff8c00"], [0.72, "#f04438"], [1, "#fff1b8"]],
+                showscale=True,
+                colorbar=dict(title="FRP<br>MW", thickness=11, len=0.55),
+                line=dict(color="rgba(8, 15, 25, 0.8)", width=0.4),
+            ) if float(frp.max()) > 0 else dict(
+                size=5,
+                color="#ff8c00",
+                line=dict(color="rgba(8, 15, 25, 0.8)", width=0.4),
+            )
+        ),
+        customdata=custom_data,
+        hovertemplate=hovertemplate,
+        showlegend=False,
+    ))
 
     fig.update_layout(
         title=dict(
@@ -435,7 +437,8 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
         font=dict(color="#e9f2ff"),
         margin=dict(l=8, r=8, t=12, b=8),
         geo=dict(
-            projection=dict(type=projection),
+            projection=dict(type=projection, scale=1),
+            center=dict(lat=10, lon=0),
             showland=True,
             landcolor="#151a22",
             showocean=True,
@@ -448,6 +451,7 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
             showframe=False,
             bgcolor="rgba(0,0,0,0)",
         ),
+        uirevision="firms-fire-map",
     )
     return fig
 
@@ -1984,9 +1988,13 @@ with tab_global_map:
         else:
             if not firms_is_live:
                 st.warning(firms_error)
-            fig = make_thermal_fire_map(firms_df, projection=projection, height=640)
-            st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
-            st.caption("NASA FIRMS thermal anomaly detections, filtered to nominal/high confidence by default. These pixels are not all confirmed wildfires.")
+            fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
+            st.plotly_chart(
+                fig,
+                width="stretch",
+                config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
+            )
+            st.caption("Simple markers colored by FRP. On phones, pinch the map to zoom and drag to pan. Map draws at most 3,000 sampled detections for speed; the table keeps the full feed. These are thermal anomalies, not all confirmed wildfires.")
 
             st.dataframe(firms_df.head(1000), width="stretch")
 
@@ -2460,9 +2468,13 @@ with tab_live_fire:
         )
 
         projection = "orthographic" if map_style == "Globe" else "natural earth"
-        fig = make_thermal_fire_map(firms_df, projection=projection, height=620)
-        st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
-        st.caption("NASA FIRMS thermal anomaly detections, filtered to nominal/high confidence by default. FRP affects hotspot size; detections are not all confirmed wildfires.")
+        fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
+        st.plotly_chart(
+            fig,
+            width="stretch",
+            config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
+        )
+        st.caption("Simple markers colored by FRP. On phones, pinch the map to zoom and drag to pan. Map draws at most 3,000 sampled detections for speed; the table keeps the full feed. These are thermal anomalies, not all confirmed wildfires.")
 
         st.dataframe(firms_df.head(1000), width="stretch")
 
