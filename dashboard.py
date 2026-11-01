@@ -272,11 +272,27 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 }
 
 /* Keep form labels legible against the app's dark background. */
+label,
+label *,
 [data-testid="stWidgetLabel"],
-[data-testid="stWidgetLabel"] p,
-[data-testid="stWidgetLabel"] label,
-[data-testid="stWidgetLabel"] span {
+[data-testid="stWidgetLabel"] *,
+[data-testid="stAppViewContainer"] [data-testid="stWidgetLabel"],
+[data-testid="stAppViewContainer"] [data-testid="stWidgetLabel"] *,
+[data-testid="stAppViewContainer"] [data-testid="stSelectbox"] label,
+[data-testid="stAppViewContainer"] [data-testid="stSelectbox"] label *,
+[data-testid="stAppViewContainer"] [data-testid="stTextInput"] label,
+[data-testid="stAppViewContainer"] [data-testid="stTextInput"] label *,
+[data-testid="stAppViewContainer"] [data-testid="stNumberInput"] label,
+[data-testid="stAppViewContainer"] [data-testid="stNumberInput"] label *,
+[data-testid="stAppViewContainer"] [data-testid="stDateInput"] label,
+[data-testid="stAppViewContainer"] [data-testid="stDateInput"] label *,
+[data-testid="stAppViewContainer"] [data-testid="stCaptionContainer"],
+[data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] li,
+[data-testid="stAppViewContainer"] [data-testid="stMetricLabel"],
+[data-testid="stAppViewContainer"] [data-testid="stMetricLabel"] * {
     color: #f3f7fb !important;
+    -webkit-text-fill-color: #f3f7fb !important;
 }
 
 .stTabs [data-baseweb="tab-list"] {
