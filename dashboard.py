@@ -1,5 +1,6 @@
 import os
 import glob
+import json
 import sys
 import subprocess
 import time
@@ -258,6 +259,26 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     background: rgba(2, 8, 23, 0.92);
 }
 
+/* Keep the secret-entry box readable even when the user's Streamlit theme is dark. */
+[data-testid="stSidebar"] input[type="password"] {
+    color: #111827 !important;
+    background-color: #ffffff !important;
+    caret-color: #111827 !important;
+    -webkit-text-fill-color: #111827 !important;
+}
+[data-testid="stSidebar"] input[type="password"]::placeholder {
+    color: #6b7280 !important;
+    -webkit-text-fill-color: #6b7280 !important;
+}
+
+/* Keep form labels legible against the app's dark background. */
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label,
+[data-testid="stWidgetLabel"] span {
+    color: #f3f7fb !important;
+}
+
 .stTabs [data-baseweb="tab-list"] {
     gap: 8px;
     overflow-x: auto;
@@ -354,26 +375,101 @@ def scatter_geo_safe(data_frame, **kwargs):
     return _SCATTER_GEO(df, **kwargs)
 
 
+def sample_map_points(data_frame, max_points=2000, rank_by=None):
+    """Use a deterministic high-signal plus world-wide sample for every map style."""
+    if data_frame is None or len(data_frame) <= max_points:
+        return data_frame.copy() if data_frame is not None else data_frame
+    if rank_by and rank_by in data_frame.columns:
+        ranked = data_frame.assign(__sample_rank=pd.to_numeric(data_frame[rank_by], errors="coerce").fillna(0))
+        strongest = ranked.nlargest(max_points // 2, "__sample_rank").drop(columns="__sample_rank")
+    else:
+        strongest = data_frame.iloc[:max_points // 2]
+    remainder = data_frame.drop(index=strongest.index)
+    sampled = remainder.sample(n=min(max_points - len(strongest), len(remainder)), random_state=17)
+    return pd.concat([strongest, sampled]).drop_duplicates().copy()
+
+
+def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_cells=4500):
+    """Aggregate detections into a lightweight, zoom-scaled thermal surface."""
+    if data_frame is None or data_frame.empty:
+        return [], 0, "nearby point density"
+
+    # Start near a kilometre so adjacent sensor detections can merge into a
+    # coherent patch, while distant single pixels stay as individual markers.
+    step_degrees = max(0.01, (float(pixel_size_meters) / 111_195.0) * 3.0)
+    numeric = pd.to_numeric(data_frame[value_column], errors="coerce") if value_column in data_frame.columns else pd.Series(np.nan, index=data_frame.index)
+    has_measurement = numeric.notna().any()
+    work = data_frame[["lat", "lon"]].copy()
+    work["__value"] = numeric if has_measurement else 1.0
+    work["__lat_cell"] = np.floor(work["lat"] / step_degrees)
+    work["__lon_cell"] = np.floor(work["lon"] / step_degrees)
+    while work.groupby(["__lat_cell", "__lon_cell"], sort=False).ngroups > max_cells:
+        step_degrees *= 1.5
+        work["__lat_cell"] = np.floor(work["lat"] / step_degrees)
+        work["__lon_cell"] = np.floor(work["lon"] / step_degrees)
+
+    aggregate = "sum" if value_column == "frp" else "mean"
+    cells = (
+        work.groupby(["__lat_cell", "__lon_cell"], as_index=False, sort=False)
+        .agg(value=("__value", aggregate), detections=("__value", "size"))
+    )
+    # Include a cell when its immediate 3x3 neighborhood has multiple
+    # detections. This bridges adjacent pixel cells without painting isolated
+    # singletons as an area.
+    cell_rows = list(cells[["__lat_cell", "__lon_cell", "detections"]].itertuples(index=False, name=None))
+    cell_counts = {(int(lat_cell), int(lon_cell)): int(count) for lat_cell, lon_cell, count in cell_rows}
+    cells["__local_support"] = [
+        sum(cell_counts.get((int(lat_cell) + dlat, int(lon_cell) + dlon), 0)
+            for dlat in (-1, 0, 1) for dlon in (-1, 0, 1))
+        for lat_cell, lon_cell, _ in cell_rows
+    ]
+    # Isolated detections remain visible as dots, without implying a fire area.
+    cells = cells.loc[cells["__local_support"] >= 2].copy()
+    if cells.empty:
+        return [], 0, "cluster intensity"
+    cells["lat"] = ((cells["__lat_cell"] + 0.5) * step_degrees).clip(-90, 90)
+    cells["lon"] = ((cells["__lon_cell"] + 0.5) * step_degrees).clip(-180, 180)
+    if not has_measurement:
+        cells["value"] = cells["detections"]
+    if value_column == "frp" or not has_measurement:
+        cells["value"] = np.log1p(cells["value"].clip(lower=0))
+
+    low = float(cells["value"].quantile(0.02))
+    high = float(cells["value"].quantile(0.98))
+    stops = [(34, 197, 94), (132, 204, 22), (234, 179, 8), (249, 115, 22), (239, 68, 68)]
+    records = []
+    for row in cells.itertuples(index=False):
+        fraction = 0.5 if high <= low else min(1.0, max(0.0, (float(row.value) - low) / (high - low)))
+        segment = min(len(stops) - 2, int(fraction * (len(stops) - 1)))
+        blend = fraction * (len(stops) - 1) - segment
+        color = "#" + "".join(
+            f"{round(a + (b - a) * blend):02x}" for a, b in zip(stops[segment], stops[segment + 1])
+        )
+        records.append({"lat": float(row.lat), "lon": float(row.lon), "color": color, "strength": 0.22 + 0.42 * fraction})
+    records.sort(key=lambda record: record["strength"])
+    if value_column == "frp":
+        basis = "FRP (relative)"
+    elif not has_measurement:
+        basis = "nearby event density"
+    elif value_column == "latest_risk" or (isinstance(value_column, str) and value_column.endswith("_intensity")):
+        basis = "local proxy/risk score (relative)"
+    else:
+        basis = "selected numeric value"
+    return records, max(pixel_size_meters / 2, step_degrees * 111_195 * 0.72), basis
+
+
 def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
     """Render FIRMS detections as a light, single-layer map of normal markers."""
-    df = data_frame.dropna(subset=["lat", "lon"]).copy()
+    df = data_frame.copy()
+    df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
+    df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+    df = df.dropna(subset=["lat", "lon"])
+    df = df[df["lat"].between(-90, 90) & df["lon"].between(-180, 180)]
     if df.empty:
         return scatter_geo_safe(df, projection=projection, height=height)
 
     total_detections = len(df)
-    map_point_limit = 3000
-    if total_detections > map_point_limit:
-        # Render the strongest half and a stable world-wide sample in one
-        # Scattergeo trace. The full dataset remains available in the table.
-        if "frp" in df.columns:
-            ranked = df.assign(__sample_rank=pd.to_numeric(df["frp"], errors="coerce").fillna(0))
-            strongest = ranked.nlargest(map_point_limit // 2, "__sample_rank").drop(columns="__sample_rank")
-        else:
-            strongest = df.iloc[:map_point_limit // 2]
-        remainder = df.drop(index=strongest.index)
-        sample_count = map_point_limit - len(strongest)
-        random_sample = remainder.sample(n=min(sample_count, len(remainder)), random_state=17)
-        df = pd.concat([strongest, random_sample]).drop_duplicates().copy()
+    df = sample_map_points(df, max_points=2000, rank_by="frp")
 
     frp = pd.to_numeric(df.get("frp", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0).clip(lower=0)
     df["__frp"] = frp
@@ -471,6 +567,10 @@ def make_dark_fig(fig):
 
 
 def make_geo_fig(fig):
+    # Keep global hazard layers framed on the whole Earth. Plotly otherwise
+    # auto-fits the view to the current event coordinates, which can make a
+    # global EONET feed look like only a small part of the planet is covered.
+    fig.update_geos(fitbounds=False, scope="world", projection_scale=1)
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -487,6 +587,168 @@ def make_geo_fig(fig):
         ),
     )
     return fig
+
+
+def render_nasa_atmosphere_map(layer_id, observation_date, height=590):
+    """Show a date-selectable NASA GIBS atmosphere layer inside the dashboard."""
+    html = """<!doctype html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+html,body,#map{height:100%;width:100%;margin:0;background:#071426}
+.status{position:absolute;z-index:1000;left:10px;top:10px;max-width:calc(100% - 78px);padding:7px 10px;border-radius:7px;background:#101827eF;color:#f3f6fa;font:13px/1.35 sans-serif;box-shadow:0 1px 6px #0008}
+.leaflet-container{font:13px sans-serif}
+@media(max-width:600px){.status{font-size:12px}.leaflet-control-zoom a{width:38px!important;height:38px!important;line-height:38px!important}}
+</style></head><body><div id="map"></div><div id="status" class="status">Loading NASA satellite layer…</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const nasaLayer = "__LAYER__";
+const nasaDate = "__DATE__";
+const map = L.map('map', {zoomControl:false, tap:true, scrollWheelZoom:false}).setView([18, 0], 2);
+L.control.zoom({position:'topright'}).addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18, attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+const status = document.getElementById('status');
+let loaded = false, errors = 0;
+let nasa;
+if (nasaLayer === 'MODIS_Terra_Land_Surface_Temp_Day') {
+  const thermalTiles = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/' + nasaLayer + '/default/' + nasaDate + '/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png';
+  nasa = L.tileLayer(thermalTiles, {
+    maxZoom:18, maxNativeZoom:7, noWrap:true,
+    updateWhenZooming:false, updateWhenIdle:true, keepBuffer:3,
+    attribution:'NASA EOSDIS GIBS'
+  }).addTo(map);
+} else {
+  nasa = L.tileLayer.wms('https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi', {
+    layers: nasaLayer, format:'image/png', transparent:true, version:'1.1.1',
+    time:nasaDate, tiled:true, attribution:'NASA EOSDIS GIBS'
+  }).addTo(map);
+}
+nasa.on('tileload', () => { loaded = true; status.textContent = 'NASA GIBS image tile received · ' + nasaDate + ' · blank areas may have no retrieval'; });
+nasa.on('tileerror', () => { errors += 1; if (!loaded && errors >= 4) status.textContent = 'No NASA imagery returned for this layer/date. Try another observation date; satellite coverage can be sparse.'; });
+setTimeout(() => { if (!loaded && errors === 0) status.textContent = 'Waiting for NASA GIBS imagery…'; }, 8000);
+const resizeGibsMap=()=>map.invalidateSize({pan:false});requestAnimationFrame(()=>requestAnimationFrame(resizeGibsMap));setTimeout(resizeGibsMap,300);new ResizeObserver(resizeGibsMap).observe(document.getElementById('map'));
+</script></body></html>"""
+    html = html.replace("__LAYER__", str(layer_id)).replace("__DATE__", str(observation_date))
+    st.iframe(html, height=height, alt="Interactive NASA atmospheric observation map")
+
+
+def render_leaflet_points(data_frame, *, color_by=None, category_colors=None,
+                          popup_columns=None, height=520, point_limit=2000, thermal=False,
+                          pixel_size_meters=1000, key="map"):
+    """Render touch-friendly markers and, optionally, an aggregated thermal surface."""
+    if data_frame is None or data_frame.empty or not {"lat", "lon"}.issubset(data_frame.columns):
+        st.info("No mappable coordinates are available for this layer.")
+        return
+
+    frame = data_frame.copy()
+    frame["lat"] = pd.to_numeric(frame["lat"], errors="coerce")
+    frame["lon"] = pd.to_numeric(frame["lon"], errors="coerce")
+    frame = frame.dropna(subset=["lat", "lon"])
+    frame = frame[frame["lat"].between(-90, 90) & frame["lon"].between(-180, 180)]
+    if frame.empty:
+        st.info("No valid latitude/longitude coordinates are available for this layer.")
+        return
+
+    total = len(frame)
+    surface_rows, surface_radius_meters, surface_basis = ([], 0, "")
+    if thermal:
+        surface_rows, surface_radius_meters, surface_basis = make_thermal_surface_records(
+            frame, color_by, pixel_size_meters=pixel_size_meters
+        )
+    frame = sample_map_points(frame, max_points=point_limit, rank_by=color_by)
+
+    if popup_columns is None:
+        popup_columns = [c for c in ("title", "hazard", "categories", "date", "region", "frp", "confidence", "satellite") if c in frame.columns]
+    popup_columns = [c for c in popup_columns if c in frame.columns and c not in {"lat", "lon"}]
+
+    records = []
+    category_colors = category_colors or {}
+    numeric_values = pd.to_numeric(frame[color_by], errors="coerce") if color_by and color_by in frame.columns else None
+    thermal_basis = "reported intensity"
+    if thermal and (numeric_values is None or not numeric_values.notna().any()):
+        density_bins = pd.DataFrame({"lat_bin": np.floor(frame["lat"]), "lon_bin": np.floor(frame["lon"])}, index=frame.index)
+        numeric_values = density_bins.groupby(["lat_bin", "lon_bin"])["lat_bin"].transform("size").astype(float)
+        thermal_basis = "nearby event density"
+    if numeric_values is not None and numeric_values.notna().any():
+        lo = float(numeric_values.quantile(0.02)) if thermal else float(numeric_values.min())
+        hi = float(numeric_values.quantile(0.98)) if thermal else float(numeric_values.max())
+    else:
+        lo, hi = 0.0, 0.0
+    ramp = ["#fde047", "#fb923c", "#f04438", "#b91c1c"]
+    thermal_ramp = ["#22c55e", "#84cc16", "#eab308", "#f97316", "#ef4444"]
+    thermal_values = numeric_values.to_numpy() if numeric_values is not None else None
+    for row_number, (_, row) in enumerate(frame.iterrows()):
+        color = "#ff5a5f"
+        radius = 5
+        if color_by and color_by in frame.columns:
+            value = row[color_by]
+            if thermal:
+                intensity = thermal_values[row_number]
+                fraction = 0 if pd.isna(intensity) or hi <= lo else min(1.0, max(0.0, (float(intensity) - lo) / (hi - lo)))
+                segment = min(len(thermal_ramp) - 2, int(fraction * (len(thermal_ramp) - 1)))
+                blend = fraction * (len(thermal_ramp) - 1) - segment
+                start = tuple(int(thermal_ramp[segment][i:i + 2], 16) for i in (1, 3, 5))
+                end = tuple(int(thermal_ramp[segment + 1][i:i + 2], 16) for i in (1, 3, 5))
+                color = "#" + "".join(f"{round(a + (b - a) * blend):02x}" for a, b in zip(start, end))
+                radius = 2.5
+            elif category_colors:
+                color = category_colors.get(str(value), "#ff5a5f")
+            elif numeric_values is not None:
+                number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+                fraction = 0 if pd.isna(number) or hi <= lo else min(0.999, max(0, (float(number) - lo) / (hi - lo)))
+                color = ramp[int(fraction * len(ramp))]
+        details = {column: ("—" if pd.isna(row[column]) else str(row[column])) for column in popup_columns}
+        if "frp" in frame.columns:
+            details["Interpretation"] = "Satellite thermal anomaly; wildfire not confirmed"
+        records.append({
+            "lat": float(row["lat"]), "lon": float(row["lon"]),
+            "color": "#f8fafc" if thermal else color,
+            "radius": radius,
+            "opacity": 0.55 if thermal else 0.82,
+            "details": details,
+        })
+
+    payload = json.dumps(records, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    surface_payload = json.dumps(surface_rows, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    html = f"""<!doctype html><!-- {key} --><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><style>
+html,body,#map{{height:100%;width:100%;margin:0;background:#071426}}.leaflet-container{{font:13px sans-serif}}
+.map-note{{position:absolute;z-index:1000;left:10px;top:10px;padding:6px 9px;border-radius:7px;background:#101827eF;color:#f3f6fa;font:12px/1.3 sans-serif;box-shadow:0 1px 6px #0008}}
+.thermal-scale{{display:flex;align-items:center;gap:6px;margin-top:5px;font-size:10px;color:#e5e7eb}}
+.thermal-scale i{{display:block;width:94px;height:8px;border-radius:8px;background:linear-gradient(90deg,#22c55e,#84cc16,#eab308,#f97316,#ef4444)}}
+.thermal-canvas{{pointer-events:none}}
+@media(max-width:600px){{.leaflet-control-zoom a{{width:38px!important;height:38px!important;line-height:38px!important}}}}
+</style></head><body><div id="map"></div><div class="map-note">__NOTE____LEGEND__</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
+const rows={payload}; const thermalCells={surface_payload}; const thermalRadiusMeters={surface_radius_meters};
+const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true}}).setView([18,0],2);
+L.control.zoom({{position:'topright'}}).addTo(map);
+ L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,noWrap:true,bounds:[[-85,-180],[85,180]],attribution:'&copy; OpenStreetMap contributors'}}).addTo(map);
+if(thermalCells.length){{
+ const ThermalSurface=L.Layer.extend({{
+  onAdd:function(target){{this._map=target;this._canvas=L.DomUtil.create('canvas','thermal-canvas');this._canvas.style.position='absolute';target.getPanes().overlayPane.insertBefore(this._canvas,target.getPanes().overlayPane.firstChild);target.on('moveend zoomend resize',this._draw,this);this._draw()}},
+  onRemove:function(target){{target.off('moveend zoomend resize',this._draw,this);L.DomUtil.remove(this._canvas)}},
+  _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
+   // Draw only localized, supported FIRMS detections. No broad temperature layer is inferred.
+   ctx.globalCompositeOperation='lighter';
+   for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.max(1.2,physicalRadius*1.8);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'d9');grad.addColorStop(.48,cell.color+'8a');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+ }});
+ new ThermalSurface().addTo(map);
+}}
+if(!thermal)for(const item of rows){{const marker=L.circleMarker([item.lat,item.lon],{{radius:item.radius,color:item.color,fillColor:item.color,fillOpacity:item.opacity,weight:thermalCells.length ? 0.6 : 1}}).addTo(map);
+const box=document.createElement('div');for(const [label,value] of Object.entries(item.details)){{const line=document.createElement('div');line.textContent=label+': '+value;box.appendChild(line)}}
+if(!Object.keys(item.details).length){{const line=document.createElement('div');line.textContent=item.lat.toFixed(3)+', '+item.lon.toFixed(3);box.appendChild(line)}}marker.bindPopup(box)}}
+</script></body></html>""".replace(
+        "__NOTE__",
+        (f"Localized fire-detection heat field · green → red = {surface_basis} · no detections = transparent · not ground temperature or fire perimeters · {len(surface_rows):,} cells" if thermal
+         else f"{len(frame):,} of {total:,} mapped · drag to pan · pinch or use +/− to zoom")
+    ).replace(
+        "__LEGEND__",
+        '<div class="thermal-scale"><span>LOW</span><i></i><span>HIGH</span></div>' if thermal else ""
+    )
+    st.iframe(html, height=height, width="stretch", tab_index=0, alt="Interactive zoomable map")
 
 
 def zscore_series(s):
@@ -1930,16 +2192,22 @@ with tab_global_map:
 
     layer = st.selectbox("Map layer", layer_options)
 
-    map_style = st.radio(
-        "Map style",
-        ["Globe", "Flat world"],
-        horizontal=False,
-        key="global_map_style"
+    map_view = st.radio(
+        "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
+        horizontal=True, key="global_map_view",
     )
-
-    projection = "orthographic" if map_style == "Globe" else "natural earth"
+    if map_view == "Globe / flat map":
+        map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="global_map_style")
+        projection = "orthographic" if map_style == "Globe" else "natural earth"
+    else:
+        projection = None
 
     if layer == "Live EONET Events":
+        st.info(
+            "EONET shows NASA's curated event records, not every satellite fire hotspot. "
+            "For broader fire coverage, choose **FIRMS Fires** in Map layer; FIRMS plots "
+            "thermal detections, which are indicators and not all confirmed wildfires."
+        )
         if live_events is None:
             show_eonet_connection_help(live_error)
         elif live_error:
@@ -1964,20 +2232,35 @@ with tab_global_map:
 
             else:
                 mapped_events = map_df.dropna(subset=["lat", "lon"])
+                st.caption(
+                    f"Showing {len(mapped_events):,} mapped EONET event records out of "
+                    f"{len(map_df):,} selected records. Events without coordinates remain in the list below."
+                )
                 if not mapped_events.empty:
-                    fig = px.scatter_geo(
-                        mapped_events,
-                        lat="lat",
-                        lon="lon",
-                        color="hazard",
-                        hover_name="title",
-                        hover_data=["categories", "date"],
-                        color_discrete_map=HAZARD_COLORS,
-                        projection=projection,
-                        height=460,
-                    )
-                    fig = make_geo_fig(fig)
-                    st.plotly_chart(fig, width="stretch", config={"responsive": True, "displaylogo": False})
+                    if map_view != "Globe / flat map":
+                        render_leaflet_points(mapped_events, color_by="hazard", category_colors=HAZARD_COLORS,
+                                              popup_columns=["title", "hazard", "categories", "date"], height=460,
+                                              thermal=map_view == "Thermal vision",
+                                              key="map_eonet_global_leaflet")
+                    else:
+                        fig = px.scatter_geo(
+                            mapped_events,
+                            lat="lat",
+                            lon="lon",
+                            color="hazard",
+                            hover_name="title",
+                            hover_data=["categories", "date"],
+                            color_discrete_map=HAZARD_COLORS,
+                            projection=projection,
+                            height=460,
+                        )
+                        fig = make_geo_fig(fig)
+                        st.plotly_chart(
+                            fig,
+                            width="stretch",
+                            config={"responsive": True, "displaylogo": False, "scrollZoom": True},
+                            key="map_eonet_global",
+                        )
                 else:
                     st.info("No coordinates are available for these filtered events, so they appear in the event list instead of on the map.")
                 show_eonet_event_browser(map_df, key="global_map_eonet")
@@ -1988,13 +2271,28 @@ with tab_global_map:
         else:
             if not firms_is_live:
                 st.warning(firms_error)
-            fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
-            st.plotly_chart(
-                fig,
-                width="stretch",
-                config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
-            )
-            st.caption("Simple markers colored by FRP. On phones, pinch the map to zoom and drag to pan. Map draws at most 3,000 sampled detections for speed; the table keeps the full feed. These are thermal anomalies, not all confirmed wildfires.")
+            if map_view != "Globe / flat map":
+                if map_view == "Thermal vision":
+                    render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
+                                          thermal=True,
+                                          pixel_size_meters=1000 if firms_source == "MODIS_NRT" else 375,
+                                          key="map_firms_global_thermal_leaflet")
+                else:
+                    render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
+                                          pixel_size_meters=1000 if firms_source == "MODIS_NRT" else 375,
+                                          key="map_firms_global_leaflet")
+            else:
+                fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
+                st.plotly_chart(
+                    fig,
+                    width="stretch",
+                    config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
+                    key="map_firms_global",
+                )
+            if map_view == "Thermal vision":
+                st.caption("Thermal vision colors only supported clusters of NASA FIRMS fire detections. Color shows relative satellite fire radiative power (FRP), not ground temperature or a fire perimeter. Empty areas have no plotted detections; isolated detections remain visible on the standard map.")
+            else:
+                st.caption("NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
             st.dataframe(firms_df.head(1000), width="stretch")
 
@@ -2066,20 +2364,31 @@ with tab_global_map:
                 map_df = base_map.dropna(subset=["lat", "lon"])
                 map_df = limit_map_points(map_df)
 
-                fig = scatter_geo_safe(
-                    map_df,
-                    lat="lat",
-                    lon="lon",
-                    color=color,
-                    size=size,
-                    hover_name="region",
-                    projection=projection,
-                    color_continuous_scale=color_scale,
-                    height=600,
-                )
+                if map_view != "Globe / flat map":
+                    popup = [c for c in ["region", color, "latest_risk"] if c and c in map_df.columns]
+                    render_leaflet_points(map_df, color_by=color, popup_columns=popup, height=560,
+                                          thermal=map_view == "Thermal vision",
+                                          key="map_local_global_leaflet")
+                else:
+                    fig = scatter_geo_safe(
+                        map_df,
+                        lat="lat",
+                        lon="lon",
+                        color=color,
+                        size=size,
+                        hover_name="region",
+                        projection=projection,
+                        color_continuous_scale=color_scale,
+                        height=600,
+                    )
 
-                fig = make_geo_fig(fig)
-                st.plotly_chart(fig, width="stretch")
+                    fig = make_geo_fig(fig)
+                    st.plotly_chart(
+                        fig,
+                        width="stretch",
+                        config={"responsive": True, "scrollZoom": True, "displayModeBar": True, "displaylogo": False},
+                        key="map_local_global",
+                    )
 
                 st.dataframe(map_df, width="stretch")
 
@@ -2157,7 +2466,7 @@ with tab_prediction:
                         title="Saved model scores by date",
                     )
                     fig = make_dark_fig(fig)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, width="stretch", key="chart_prediction_timeline")
 
             st.markdown("### Most Recent Saved Model Score")
 
@@ -2239,7 +2548,7 @@ with tab_local_hazards:
                 else:
                     fig = px.line(timeline, x="date", y=col, height=380)
                     fig = make_dark_fig(fig)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, width="stretch", key="chart_local_hazard_timeline")
 
             st.markdown(f"### {selected_hazard} Locations")
 
@@ -2251,29 +2560,40 @@ with tab_local_hazards:
                 map_df = top_points.dropna(subset=["lat", "lon"])
 
                 if not map_df.empty:
-                    map_style = st.radio(
-                        "Map style",
-                        ["Globe", "Flat world"],
-                        horizontal=True,
-                        key=f"local_{col}_map_style"
+                    map_view = st.radio(
+                        "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
+                        horizontal=True, key=f"local_{col}_map_view",
                     )
+                    if map_view != "Globe / flat map":
+                        render_leaflet_points(map_df, color_by=col, popup_columns=["region", col],
+                                              height=560, thermal=map_view == "Thermal vision",
+                                              key=f"map_local_hazard_{col}_leaflet")
+                    else:
+                        map_style = st.radio(
+                            "Map style", ["Globe", "Flat world"], horizontal=True,
+                            key=f"local_{col}_map_style"
+                        )
+                        projection = "orthographic" if map_style == "Globe" else "natural earth"
 
-                    projection = "orthographic" if map_style == "Globe" else "natural earth"
+                        fig = scatter_geo_safe(
+                            map_df,
+                            lat="lat",
+                            lon="lon",
+                            color=col,
+                            size=col,
+                            hover_name="region",
+                            projection=projection,
+                            color_continuous_scale=color_scale,
+                            height=560,
+                        )
 
-                    fig = scatter_geo_safe(
-                        map_df,
-                        lat="lat",
-                        lon="lon",
-                        color=col,
-                        size=col,
-                        hover_name="region",
-                        projection=projection,
-                        color_continuous_scale=color_scale,
-                        height=560,
-                    )
-
-                    fig = make_geo_fig(fig)
-                    st.plotly_chart(fig, width="stretch")
+                        fig = make_geo_fig(fig)
+                        st.plotly_chart(
+                            fig,
+                            width="stretch",
+                            config={"responsive": True, "scrollZoom": True, "displayModeBar": True, "displaylogo": False},
+                            key="map_local_hazard",
+                        )
 
 
 # ============================================================
@@ -2283,9 +2603,9 @@ with tab_local_hazards:
 with tab_atmosphere:
     st.markdown("## 🌫️ Air & Atmosphere")
     st.markdown(
-        "Explore NASA satellite products for atmospheric composition and "
-        "aerosols. These are satellite column or aerosol observations, not "
-        "street-level air-quality readings."
+        "View NASA satellite observations directly on this dashboard. These "
+        "products measure atmospheric columns or aerosols from space; they are "
+        "not street-level air-quality readings."
     )
 
     atmosphere_products = [
@@ -2294,12 +2614,12 @@ with tab_atmosphere:
             "instrument": "MOPITT · daily total column",
             "layer": "MOPITT_CO_Daily_Total_Column_Day",
             "description": "Maps CO through the atmospheric column. Wildfires and transport can create broad plumes.",
-            "period": "Daily satellite product",
+            "period": "Daily observations; standard product may lag by 3 weeks to 2 months",
         },
         {
             "name": "Carbon dioxide (CO₂)",
             "instrument": "OCO-2 · total-column average",
-            "layer": "OCO-2_Carbon_Dioxide_Total_Column_Average",
+            "layer": "OCO_Carbon_Dioxide_Total_Column_Average",
             "description": "Satellite XCO₂ observations show regional patterns. Coverage is sparse between satellite overpasses.",
             "period": "Satellite observations; revisit and cloud gaps apply",
         },
@@ -2307,7 +2627,7 @@ with tab_atmosphere:
             "name": "Aerosols / haze",
             "instrument": "OMI · aerosol optical depth",
             "layer": "OMI_Aerosol_Optical_Depth",
-            "description": "Aerosol optical depth is a satellite haze proxy; it is not a direct PM₂.₅ or visibility measurement.",
+            "description": "Satellite aerosol optical depth; not a direct PM₂.₅ or visibility measurement.",
             "period": "Satellite retrieval; clouds and surface conditions affect coverage",
         },
         {
@@ -2326,25 +2646,40 @@ with tab_atmosphere:
         },
     ]
 
-    cards = st.columns(3)
-    for card, product in zip(cards, atmosphere_products):
-        with card:
-            st.markdown(f"### {product['name']}")
-            st.caption(product["instrument"])
-            st.write(product["description"])
-            st.caption(product["period"])
-            worldview_url = (
-                "https://worldview.earthdata.nasa.gov/?l="
-                f"{product['layer']},Coastlines,Reference_Features,Reference_Labels"
-            )
-            st.link_button("Explore in NASA Worldview", worldview_url, width="stretch")
+    product_names = [product["name"] for product in atmosphere_products]
+    selected_product_name = st.selectbox("NASA observation", product_names, key="nasa_atmosphere_product")
+    selected_product = next(product for product in atmosphere_products if product["name"] == selected_product_name)
+    atmosphere_lag_days = 60 if selected_product_name == "Carbon monoxide (CO)" else 30 if selected_product_name == "Carbon dioxide (CO₂)" else 7
+    selected_observation_date = st.date_input(
+        "Satellite observation date",
+        value=datetime.date.today() - datetime.timedelta(days=atmosphere_lag_days),
+        max_value=datetime.date.today(),
+        key=f"nasa_atmosphere_date_v2_{product_names.index(selected_product_name)}",
+        help="Choose an observation date. CO and CO₂ products can lag; daily satellite swaths and clouds leave gaps. A blank area may mean no valid retrieval rather than zero gas.",
+    )
+    st.markdown(f"### {selected_product['name']}")
+    st.caption(f"{selected_product['instrument']} · {selected_product['period']}")
+    st.write(selected_product["description"])
+    if selected_product_name == "Carbon dioxide (CO₂)":
+        st.info(
+            "OCO-2 samples a narrow ground track and needs clear viewing conditions. "
+            "At whole-world scale its coverage can look very sparse or nearly blank; "
+            "blank areas do not mean zero CO₂. Use the map’s + control or pinch to zoom in."
+        )
+    render_nasa_atmosphere_map(selected_product["layer"], selected_observation_date.isoformat())
+    st.caption(
+        "NASA EOSDIS GIBS satellite visualization, shown for the selected observation date. "
+        "Blank areas mean no valid retrieval was available for that date (for example, due to orbit coverage or clouds). "
+        "The local proxy charts remain under Local Signal Proxies and are labeled separately."
+    )
 
-    st.markdown("### Interpreting these layers")
+    st.markdown("### What this measurement means")
     st.markdown(
-        "NASA Worldview provides the interactive, time-selectable satellite "
-        "maps above. Product timing and coverage differ: CO is a daily product, "
-        "CO₂ is a sparse satellite retrieval, and aerosol optical depth is an "
-        "indicator of airborne particles rather than a ground monitor."
+        "The NASA layer is satellite-observed data rendered by GIBS; it is not a "
+        "model prediction or a value inferred from the local files. CO and CO₂ "
+        "are column observations, so they do not represent the concentration "
+        "at a person's breathing height. Aerosol optical depth describes how "
+        "aerosols affect light through the atmospheric column, not ground-level PM₂.₅."
     )
 
 
@@ -2366,19 +2701,36 @@ with tab_live_events:
     else:
         mapped_events = live_events.dropna(subset=["lat", "lon"])
         if not mapped_events.empty:
-            fig = px.scatter_geo(
-                mapped_events,
-                lat="lat",
-                lon="lon",
-                color="hazard",
-                hover_name="title",
-                hover_data=[c for c in ["categories", "date"] if c in mapped_events.columns],
-                color_discrete_map=HAZARD_COLORS,
-                projection="natural earth",
-                height=420,
+            map_view = st.radio(
+                "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
+                horizontal=True, key="live_events_map_view",
             )
-            fig = make_geo_fig(fig)
-            st.plotly_chart(fig, width="stretch", config={"responsive": True, "displaylogo": False})
+            if map_view != "Globe / flat map":
+                render_leaflet_points(mapped_events, color_by="hazard", category_colors=HAZARD_COLORS,
+                                      popup_columns=["title", "hazard", "categories", "date"], height=460,
+                                      thermal=map_view == "Thermal vision",
+                                      key="map_eonet_live_events_leaflet")
+            else:
+                map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="live_events_map_style")
+                projection = "orthographic" if map_style == "Globe" else "natural earth"
+                fig = px.scatter_geo(
+                    mapped_events,
+                    lat="lat",
+                    lon="lon",
+                    color="hazard",
+                    hover_name="title",
+                    hover_data=[c for c in ["categories", "date"] if c in mapped_events.columns],
+                    color_discrete_map=HAZARD_COLORS,
+                    projection=projection,
+                    height=420,
+                )
+                fig = make_geo_fig(fig)
+                st.plotly_chart(
+                    fig,
+                    width="stretch",
+                    config={"responsive": True, "displaylogo": False, "scrollZoom": True},
+                    key="map_eonet_live_events",
+                )
         else:
             st.info("These event records do not currently include coordinates for a map.")
         show_eonet_event_browser(live_events, key="live_events_browser")
@@ -2411,26 +2763,35 @@ with tab_live_fire:
             if mapped_fire_events.empty:
                 st.info("EONET has no coordinates for these fire events yet; the event records remain available above.")
             else:
-                map_style = st.radio(
-                    "Fire map style",
-                    ["Globe", "Flat world"],
-                    horizontal=True,
-                    key="live_fire_map_style"
+                map_view = st.radio(
+                    "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
+                    horizontal=True, key="live_fire_eonet_map_view",
                 )
-
-                projection = "orthographic" if map_style == "Globe" else "natural earth"
-                fig = px.scatter_geo(
-                    mapped_fire_events,
-                    lat="lat",
-                    lon="lon",
-                    color="hazard",
-                    hover_name="title",
-                    color_discrete_map=HAZARD_COLORS,
-                    projection=projection,
-                    height=560,
-                )
-                fig = make_geo_fig(fig)
-                st.plotly_chart(fig, width="stretch")
+                if map_view != "Globe / flat map":
+                    render_leaflet_points(mapped_fire_events, color_by="hazard", category_colors=HAZARD_COLORS,
+                                          popup_columns=["title", "hazard", "categories", "date"], height=560,
+                                          thermal=map_view == "Thermal vision",
+                                          key="map_eonet_live_fire_leaflet")
+                else:
+                    map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="live_fire_map_style")
+                    projection = "orthographic" if map_style == "Globe" else "natural earth"
+                    fig = px.scatter_geo(
+                        mapped_fire_events,
+                        lat="lat",
+                        lon="lon",
+                        color="hazard",
+                        hover_name="title",
+                        color_discrete_map=HAZARD_COLORS,
+                        projection=projection,
+                        height=560,
+                    )
+                    fig = make_geo_fig(fig)
+                    st.plotly_chart(
+                        fig,
+                        width="stretch",
+                        config={"responsive": True, "displaylogo": False, "scrollZoom": True},
+                        key="map_eonet_live_fire",
+                    )
 
     st.markdown("### FIRMS Fire Feed")
 
@@ -2458,23 +2819,36 @@ with tab_live_fire:
             )
 
             fig = make_dark_fig(fig)
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, width="stretch", key="chart_firms_timeline")
 
-        map_style = st.radio(
-            "FIRMS map style",
-            ["Globe", "Flat world"],
-            horizontal=True,
-            key="firms_map_style"
+        map_view = st.radio(
+            "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
+            horizontal=True, key="firms_map_view",
         )
-
-        projection = "orthographic" if map_style == "Globe" else "natural earth"
-        fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
-        st.plotly_chart(
-            fig,
-            width="stretch",
-            config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
-        )
-        st.caption("Simple markers colored by FRP. On phones, pinch the map to zoom and drag to pan. Map draws at most 3,000 sampled detections for speed; the table keeps the full feed. These are thermal anomalies, not all confirmed wildfires.")
+        if map_view != "Globe / flat map":
+            if map_view == "Thermal vision":
+                render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
+                                      thermal=True,
+                                      pixel_size_meters=1000 if firms_source == "MODIS_NRT" else 375,
+                                      key="map_firms_live_thermal_leaflet")
+            else:
+                render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
+                                      pixel_size_meters=1000 if firms_source == "MODIS_NRT" else 375,
+                                      key="map_firms_live_leaflet")
+        else:
+            map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="firms_map_style")
+            projection = "orthographic" if map_style == "Globe" else "natural earth"
+            fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
+            st.plotly_chart(
+                fig,
+                width="stretch",
+                config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
+                key="map_firms_live",
+            )
+        if map_view == "Thermal vision":
+            st.caption("Thermal vision colors only supported clusters of NASA FIRMS fire detections. Color shows relative satellite fire radiative power (FRP), not ground temperature or a fire perimeter. Empty areas have no plotted detections; isolated detections remain visible on the standard map.")
+        else:
+            st.caption("NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
         st.dataframe(firms_df.head(1000), width="stretch")
 
