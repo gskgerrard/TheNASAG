@@ -20,7 +20,7 @@ X_train, X_test = X[:-10], X[-10:]
 y_train, y_test = y[:-10], y[-10:]
 
 # 2. BUILD THE DNN (ConvLSTM)
-# This model 'sees' the earth like a video of infrared heat maps
+# This demo uses synthetic CO/IR-like grids; it does not train on NASA observations.
 def build_complete_model():
     model = models.Sequential([
         # ConvLSTM captures the "Where" (spatial) and "When" (temporal)
@@ -59,13 +59,13 @@ plt.figure(figsize=(12, 5))
 
 # Actual CO (Channel 0)
 plt.subplot(1, 2, 1)
-plt.title("Actual CO (Infrared Style)")
+plt.title("Synthetic CO-like input")
 plt.imshow(y_test[-1, :, :, 0], cmap='inferno') # 'inferno' looks like heat
 plt.colorbar(label='CO Density')
 
 # Predicted CO (Channel 0)
 plt.subplot(1, 2, 2)
-plt.title("DNN Predicted CO Change")
+plt.title("Predicted synthetic CO-like field")
 plt.imshow(predictions[-1, :, :, 0], cmap='inferno')
 plt.colorbar(label='Predicted CO Density')
 

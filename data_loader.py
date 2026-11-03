@@ -1,4 +1,5 @@
 import logging
+import numpy as np
 import pandas as pd
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
@@ -9,6 +10,67 @@ logger = logging.getLogger(__name__)
 
 FEATURES = ['lat', 'lon', 'brightness_temp', 'precip_mm_day', 'soil_moisture']
 TARGET = 'frp'
+
+
+def generate_synthetic_nasa_data(timesteps=60, lat=64, lon=64, random_state=42):
+    """Create a small synthetic spatiotemporal demo grid.
+
+    Despite the compatibility name, these generated CO/IR-like channels are
+    not NASA observations and must not be used as real environmental data.
+    The output shape is (time, latitude, longitude, 2).
+    """
+    if any(not isinstance(size, (int, np.integer)) or size < 1
+           for size in (timesteps, lat, lon)):
+        raise ValueError("timesteps, lat, and lon must be positive integers")
+    if timesteps < 2:
+        raise ValueError("timesteps must be at least 2 to build sequences")
+
+    rng = np.random.default_rng(random_state)
+    y_grid, x_grid = np.mgrid[-1:1:complex(lat), -1:1:complex(lon)]
+    frames = np.empty((timesteps, lat, lon, 2), dtype=np.float32)
+
+    for step in range(timesteps):
+        phase = 2 * np.pi * step / max(timesteps, 1)
+        plume_x, plume_y = 0.38 * np.sin(phase), 0.32 * np.cos(phase * 0.7)
+        co_plume = np.exp(-(((x_grid - plume_x) / 0.28) ** 2
+                            + ((y_grid - plume_y) / 0.48) ** 2) / 2)
+        co_background = 0.12 + 0.035 * np.sin(x_grid * 2 + phase)
+
+        fire_x, fire_y = 0.48 * np.cos(phase * 1.2), 0.42 * np.sin(phase)
+        infrared = 0.08 + 0.78 * np.exp(-(((x_grid - fire_x) / 0.12) ** 2
+                                           + ((y_grid - fire_y) / 0.12) ** 2) / 2)
+        infrared += 0.52 * np.exp(-(((x_grid + 0.35) / 0.16) ** 2
+                                    + ((y_grid - 0.25) / 0.14) ** 2) / 2)
+
+        frames[step, :, :, 0] = np.clip(co_background + 0.72 * co_plume
+                                        + rng.normal(0, 0.012, (lat, lon)), 0, 1)
+        frames[step, :, :, 1] = np.clip(infrared
+                                        + rng.normal(0, 0.01, (lat, lon)), 0, 1)
+
+    return frames
+
+
+def prepare_sequences(data, window_size=10):
+    """Turn a (time, lat, lon, channels) array into next-frame sequences."""
+    values = np.asarray(data, dtype=np.float32)
+    if values.ndim != 4:
+        raise ValueError(
+            "data must have shape (time, latitude, longitude, channels); "
+            f"received {values.shape}"
+        )
+    if not isinstance(window_size, (int, np.integer)) or window_size < 1:
+        raise ValueError("window_size must be a positive integer")
+    if len(values) <= window_size:
+        raise ValueError(
+            f"need more than {window_size} time steps, received {len(values)}"
+        )
+
+    sequence_count = len(values) - window_size
+    X = np.stack([values[index:index + window_size]
+                  for index in range(sequence_count)])
+    y = np.stack([values[index + window_size]
+                  for index in range(sequence_count)])
+    return X, y
 
 
 def load_and_prepare_data(file_path, features=None, target=TARGET,
