@@ -1,67 +1,63 @@
-import tensorflow as tf
-from tensorflow.keras import layers, models
-from data_loader import load_and_prepare_data
+"""Train a model that estimates VIIRS fire radiative power (FRP)."""
+from pathlib import Path
+
 import joblib
 import numpy as np
-import json
+import tensorflow as tf
+from tensorflow.keras import layers, models
 
-# Configuration
-DATA_PATH = 'data/J1_VIIRS_C2_Global_48h.csv'
-MODEL_SAVE_PATH = 'output/risk_model.h5'
+from data_loader import load_and_prepare_data
+
+ROOT = Path(__file__).resolve().parent
+DATA_PATH = ROOT / "data" / "J1_VIIRS_C2_Global_48h.csv"
+OUTPUT_DIR = ROOT / "output"
+MODEL_PATH = OUTPUT_DIR / "risk_model.keras"
+
+
+def build_model(feature_count):
+    model = models.Sequential([
+        layers.Input(shape=(feature_count,)),
+        layers.Dense(128, activation="relu"),
+        layers.Dropout(0.2),
+        layers.Dense(64, activation="relu"),
+        layers.Dense(1, activation="relu"),
+    ])
+    model.compile(optimizer="adam", loss="mse", metrics=["mae"])
+    return model
+
 
 def train():
-    # Load data
-    X_train, X_test, y_train, y_test, scaler = load_and_prepare_data(DATA_PATH)
-    
-    # Build the DNN Model
-    model = models.Sequential([
-        layers.Dense(128, activation='relu', input_shape=(X_train.shape[1],)),
-        layers.Dropout(0.2),
-        layers.Dense(64, activation='relu'),
-        layers.Dense(32, activation='relu'),
-        layers.Dense(1, activation='linear') # Predicts Fire Radiative Power (FRP)
-    ])
+    if not DATA_PATH.is_file():
+        raise FileNotFoundError(f"FIRMS dataset not found: {DATA_PATH}")
+    data = load_and_prepare_data(
+        DATA_PATH,
+        features=["lat", "lon", "brightness_temp", "scan", "track", "brightness_temp_5"],
+        target="frp",
+        group_col="acq_date",
+        log_target=True,
+    )
+    x_train, x_test = data["X_train"], data["X_test"]
+    y_train, y_test = data["y_train"], data["y_test"]
+    model = build_model(x_train.shape[1])
+    model.fit(x_train, y_train, validation_data=(x_test, y_test),
+              epochs=50, batch_size=32, callbacks=[
+                  tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=6,
+                                                   restore_best_weights=True)
+              ], verbose=1)
 
-    # Compile
-    model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    model.save(MODEL_PATH)
+    joblib.dump(data["preprocessor"], OUTPUT_DIR / "scaler.pkl")
+    metadata = {
+        "features": data["feature_names"],
+        "target": "frp",
+        "log_target": True,
+        "max_training_frp": float(np.expm1(y_train).max()),
+    }
+    joblib.dump(metadata, OUTPUT_DIR / "model_metadata.pkl")
+    print(f"Model and preprocessing saved under {OUTPUT_DIR}")
+    return model
 
-    # Train
-    print("Starting training...")
-    model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test), verbose=1)
-
-    # Save the model and the scaler
-    import os
-    if not os.path.exists('output'): os.makedirs('output')
-    
-    model.save(MODEL_SAVE_PATH)
-    joblib.dump(scaler, 'output/scaler.pkl')
-    print(f"Model saved to {MODEL_SAVE_PATH}")
-
-model.save('earth_emergency_model.h5')
-print("Model saved as earth_emergency_model.h5")
-
-# 2. Create a function to predict for new data
-def predict_emergency(input_data):
-    """
-    input_data: A list or numpy array of features 
-    (Must have the same number of columns as your training data)
-    """
-    # Convert input to numpy array and reshape for the model
-    data_array = np.array(input_data).reshape(1, -1)
-    
-    # Get prediction
-    prediction = model.predict(data_array)
-    result_index = np.argmax(prediction)
-    
-    # Map back to labels (D=Danger, N=Normal)
-    labels = ['Normal', 'Danger'] # Adjust based on your specific encoding
-    return labels[result_index], prediction[0][result_index]
-
-# --- Example Usage ---
-# Replace these numbers with actual real-time sensor data
-sample_data = [0.5, 1.2, 0.03, 0.8, 1.1, 0.4, 0.9, 0.2, 0.1, 0.5, 0.6, 0.7] 
-result, confidence = predict_emergency(sample_data)
-print(f"Prediction: {result} (Confidence: {confidence:.2%})")
 
 if __name__ == "__main__":
     train()

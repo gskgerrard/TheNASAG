@@ -1,70 +1,51 @@
-# Disaster Risk Prediction System
+# Earth Emergency Dashboard
 
-This project analyzes NASA-style environmental CSV/CVV files, detects significant changes, and estimates disaster risk using a DNN.
+This project combines local environmental CSV files, NASA EONET event records,
+and NASA FIRMS active fire detections. Live services need internet access. FIRMS
+also needs a free MAP_KEY.
 
-## Input
+## Install and run
 
-Put your data files here:
+From this folder, install `requirements.txt`, then start the dashboard:
 
-    data/
+```powershell
+python -m pip install -r requirements.txt
+$env:NASA_FIRMS_MAP_KEY = "your_map_key"
+python -m streamlit run dashboard.py
+```
 
-Supported extensions:
+Get a FIRMS MAP_KEY from [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/).
+Alternatively, enter it in the dashboard's password field for the current
+session. The key is not saved by the app. EONET is public and does not use this
+key.
 
-    .csv
-    .cvv
-    .txt
+## Data and predictions
 
-Required columns:
+Place dated `.csv` or `.cvv` files in `data/`. The dashboard reads these files
+and labels local signals as derived indicators. It does not treat proxies as
+measured atmospheric concentrations.
 
-    date
-    one or more numeric environmental variables
+Run `python cvv.py` to generate synthetic example hazard data. Those examples
+are illustrative only and are not NASA observations.
 
-Optional columns:
+The included `J1_VIIRS_C2_Global_48h.csv` is a saved VIIRS FIRMS sample, not a
+live or current feed. The model estimates fire radiative power (FRP) for
+detections in this file. It does not predict future disasters or estimate a
+probability of a fire. To train and run that estimate:
 
-    region
-    lat
-    lon
-    label / disaster_label / event / target
+```powershell
+python pipeline.py
+```
 
-If no label column is present, proxy labels are created from statistical extremes.
+The model and preprocessing files go into `output/`; estimates are written to
+`output/future_risk.csv`. The dashboard's **Run Prediction** button runs the
+same pipeline. You can also run `python train_model.py` to train only, or
+`python run_prediction.py` after training to estimate the bundled sample.
 
-## Run
+## Live FIRMS feed
 
-    python full_disaster_predictor.py
-
-## Outputs
-
-    output/trend_report.csv
-    output/trends.png
-    output/trend_map_*.png
-    output/future_risk.csv
-    output/future_risk.png
-    output/risk_model.pkl
-    output/scaler.pkl
-
-## Dashboard
-
-Optional Streamlit dashboard:
-
-    pip install streamlit
-    streamlit run dashboard.py
-
-### Live NASA FIRMS fire detections
-
-The dashboard can fetch recent global VIIRS fire detections directly from FIRMS.
-Set your MAP_KEY in the terminal before starting Streamlit so it is not saved in
-the source code or typed into the dashboard each time.
-
-PowerShell:
-
-    $env:NASA_FIRMS_MAP_KEY = "your_map_key"
-    streamlit run dashboard.py
-
-You can also enter the key in the dashboard's password field; that value is only
-used for the current session. Choose the satellite feed and one to ten lookback
-days in the sidebar. The dashboard refreshes its cached FIRMS results every ten
-minutes.
-
-The current Fire layer uses real FIRMS detections. Local CO, CO₂, smoke, and haze
-layers still depend on the local files and derived indicators; they are not live
-gas concentration measurements.
+The dashboard fetches near-real-time VIIRS or MODIS detections using the
+selected source and lookback period. A saved local FIRMS CSV is shown as a
+dated snapshot only when the live request is unavailable. FIRMS hotspots are
+satellite detections and do not by themselves confirm a wildfire or define a
+fire perimeter.

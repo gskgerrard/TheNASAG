@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow.keras import layers, models
-from data_loader import generate_synthetic_nasa_data, prepare_sequences
+from data_loader import generate_synthetic_environment_data, prepare_sequences
 
 # --- CONFIGURATION ---
 WINDOW_SIZE = 10
@@ -12,7 +12,7 @@ CHANNELS = 2 # 0: CO, 1: IR
 
 # 1. LOAD DATA
 print("--- Loading Data ---")
-raw_data = generate_synthetic_nasa_data(timesteps=60, lat=LAT_SIZE, lon=LON_SIZE)
+raw_data = generate_synthetic_environment_data(timesteps=60, lat=LAT_SIZE, lon=LON_SIZE)
 X, y = prepare_sequences(raw_data, window_size=WINDOW_SIZE)
 
 # Split into Train/Test (Last 10 time steps for testing)

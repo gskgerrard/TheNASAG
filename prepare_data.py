@@ -1,54 +1,46 @@
+"""Combine dated local CSV/CVV inputs without inventing missing measurements."""
+from pathlib import Path
+
 import pandas as pd
-import glob
-import os
 
-# Define paths
-data_dir = "data"
-output_file = "data/historical_hazards.csv"
+ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "data"
+OUTPUT_FILE = DATA_DIR / "historical_hazards.csv"
+DATE_COLUMNS = ("date", "time", "datetime", "timestamp", "acq_date", "acquisition_date")
 
-# Find all .cvv files in the data folder
-files = glob.glob(os.path.join(data_dir, "*.cvv"))
 
-all_data = []
+def prepare():
+    files = sorted(p for p in DATA_DIR.rglob("*")
+                   if p.is_file() and p.suffix.lower() in {".csv", ".cvv"}
+                   and p.resolve() != OUTPUT_FILE.resolve()
+                   and p.name.lower() != "coordinates.csv")
+    frames = []
+    for path in files:
+        try:
+            frame = pd.read_csv(path)
+            date_col = next((c for c in frame.columns if c.lower() in DATE_COLUMNS), None)
+            if date_col is None:
+                print(f"Skipped {path.name}: no date column")
+                continue
+            if date_col != "date":
+                frame = frame.rename(columns={date_col: "date"})
+            frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+            frame = frame.dropna(subset=["date"])
+            if not frame.empty:
+                frame["source_file"] = path.name
+                frames.append(frame)
+                print(f"Loaded {path.name}: {len(frame):,} dated rows")
+        except Exception as exc:
+            print(f"Skipped {path.name}: {type(exc).__name__}: {exc}")
 
-print(f"Found {len(files)} data files. Combining now...")
+    if not frames:
+        raise ValueError(f"No dated CSV/CVV inputs found in {DATA_DIR}")
+    combined = pd.concat(frames, ignore_index=True, sort=False).sort_values("date")
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(OUTPUT_FILE, index=False)
+    print(f"Wrote {len(combined):,} rows to {OUTPUT_FILE}")
+    return combined
 
-for file_path in files:
-    try:
-        # Reading the .cvv files
-        df = pd.read_csv(file_path)
-        
-        # Basic cleaning: ensure date is recognized
-        date_cols = ["date", "time", "datetime", "timestamp", "acq_date", "acquisition_date"]
-        for col in date_cols:
-            if col in df.columns:
-                df = df.rename(columns={col: "date"})
-                break
-        
-        df["date"] = pd.to_datetime(df["date"], errors='coerce')
-        
-        # Drop rows where date is missing
-        df = df.dropna(subset=["date"])
-        
-        all_data.append(df)
-        print(f"Successfully loaded: {os.path.basename(file_path)}")
-    except Exception as e:
-        print(f"Error loading {file_path}: {e}")
 
-if all_data:
-    # Combine all files into one
-    master_df = pd.concat(all_data, ignore_index=True)
-    
-    # Ensure we have the columns the model needs
-    # If they don't exist, we create them as 0
-    needed_cols = ['fire_intensity', 'heat_intensity', 'smoke_intensity', 
-                     'haze_intensity', 'flood_intensity', 'co2_intensity', 'risk_score']
-    for col in needed_cols:
-        if col not in master_df.columns:
-            master_df[col] = 0.0
-
-    # Save the master file
-    master_df.to_csv(output_file, index=False)
-    print(f"--- SUCCESS: Master file created at {output_file} ---")
-else:
-    print("No files were found to combine.")
+if __name__ == "__main__":
+    prepare()

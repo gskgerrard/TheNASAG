@@ -133,7 +133,7 @@ def make_region_file(name, lat, lon, region_type):
         }
     )
 
-    filename = os.path.join("data", f"nasa_{name}_data.cvv")
+    filename = os.path.join("data", f"synthetic_{name}_data.cvv")
     df.to_csv(filename, index=False)
 
     print(
@@ -152,4 +152,4 @@ regions = [
 for name, lat, lon, region_type in regions:
     make_region_file(name, lat, lon, region_type)
 
-print("\nDone. Your .cvv files are inside the data/ folder.")
+print("\nDone. Synthetic example files are inside the data/ folder; these are not NASA observations.")

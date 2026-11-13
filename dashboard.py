@@ -5,6 +5,7 @@ import sys
 import subprocess
 import time
 import datetime
+from pathlib import Path
 from io import StringIO
 import joblib
 import numpy as np
@@ -42,14 +43,13 @@ except ImportError:
 # CONFIG
 # ============================================================
 
-DATA_DIR = "data"
-OUTPUT_DIR = "output"
-COORD_PATH = os.path.join(DATA_DIR, "coordinates.csv")
+ROOT_DIR = Path(__file__).resolve().parent
+DATA_DIR = str(ROOT_DIR / "data")
+OUTPUT_DIR = str(ROOT_DIR / "output")
+COORD_PATH = str(ROOT_DIR / "data" / "coordinates.csv")
 
 PREDICTOR_SCRIPT_CANDIDATES = [
-    "disaster_prediction.py",
-    "full_disaster_predictor.py",
-    "predictor.py",
+    "pipeline.py",
 ]
 
 EONET_URL = "https://eonet.gsfc.nasa.gov/api/v3/events"
@@ -868,8 +868,9 @@ def count_positive_points(point_summary, col):
 
 def find_predictor_script():
     for name in PREDICTOR_SCRIPT_CANDIDATES:
-        if os.path.exists(name):
-            return name
+        path = ROOT_DIR / name
+        if path.is_file():
+            return str(path)
 
     return None
 
@@ -903,6 +904,7 @@ def load_all_data():
         "coordinates",
         "archive",
         "backup",
+        "historical_hazards",
     ]
 
     files = [
@@ -1678,9 +1680,15 @@ def get_firms_map_key():
 def fetch_firms_url(url):
     if not url:
         return None, "No FIRMS URL provided."
+    if not url.lower().startswith("https://"):
+        return None, "FIRMS CSV URL must use HTTPS."
+    if not HAS_REQUESTS:
+        return None, "Install requests to fetch a FIRMS CSV URL."
 
     try:
-        df = pd.read_csv(url)
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        df = pd.read_csv(StringIO(response.text))
 
         if df.empty:
             return None, "FIRMS URL returned an empty table."
@@ -1796,11 +1804,22 @@ def fetch_firms_api(map_key, source="VIIRS_SNPP_NRT", day_range=1):
         return None, "Enter a FIRMS MAP_KEY or set NASA_FIRMS_MAP_KEY."
     if not HAS_REQUESTS:
         return None, "Install requests to fetch FIRMS data."
+    allowed_sources = {
+        "VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT"
+    }
+    if source not in allowed_sources:
+        return None, "Choose a supported NASA FIRMS near-real-time feed."
+    try:
+        day_range = int(day_range)
+    except (TypeError, ValueError):
+        return None, "FIRMS lookback must be from 1 to 5 days."
+    if not 1 <= day_range <= 5:
+        return None, "FIRMS lookback must be from 1 to 5 days."
 
     # Keep the key out of displayed errors and use the official FIRMS area API.
     url = (
         "https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
-        f"{map_key}/{source}/world/{int(day_range)}"
+        f"{map_key}/{source}/world/{day_range}"
     )
     try:
         response = requests.get(url, timeout=45)
@@ -1877,8 +1896,8 @@ st.markdown(
         <div class="earth-badge">🌍</div>
         <h1>Earth Emergency Command</h1>
         <p>
-            Live NASA events, fire feed, local hazard detection,
-            coordinates, and disaster prediction in one dashboard.
+            NASA EONET and FIRMS feeds, local environmental indicators,
+            satellite imagery, and mapped observations in one dashboard.
         </p>
     </div>
     """,
@@ -1899,19 +1918,21 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 🧠 Prediction Engine")
+    st.markdown("### 🧠 VIIRS Estimate Model")
 
     predictor_script = find_predictor_script()
 
     if predictor_script:
-        st.caption(f"Detected predictor: `{predictor_script}`")
+        st.caption("Uses the bundled VIIRS FIRMS sample; this is not a live forecast.")
 
-        if st.button("▶️ Run Prediction"):
-            with st.spinner("Running prediction script..."):
+        if st.button("▶️ Train & Estimate Sample"):
+            with st.spinner("Training the VIIRS model and estimating fire intensity..."):
                 result = subprocess.run(
                     [sys.executable, predictor_script],
                     capture_output=True,
-                    text=True
+                    text=True,
+                    cwd=ROOT_DIR,
+                    timeout=3600,
                 )
 
             if result.stdout:
@@ -1922,7 +1943,7 @@ with st.sidebar:
                 if result.stderr:
                     st.code(result.stderr[-3000:])
             else:
-                st.success("Prediction script finished.")
+                st.success("VIIRS fire intensity estimate finished.")
 
             st.cache_data.clear()
             st.rerun()
@@ -1989,7 +2010,7 @@ with st.sidebar:
         ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT"],
         help="Near real-time active fire detections from NASA FIRMS."
     )
-    firms_days = st.slider("FIRMS lookback days", 1, 10, 1)
+    firms_days = st.slider("FIRMS lookback days", 1, 5, 1)
     include_low_confidence = st.checkbox(
         "Include low-confidence detections",
         value=False,
@@ -2029,6 +2050,8 @@ live_events, live_error = fetch_eonet_events(limit=event_limit)
 if firms_url:
     firms_df, firms_error = fetch_firms_url(firms_url)
     firms_is_live = False
+    if firms_df is not None:
+        firms_error = "Showing the configured FIRMS CSV URL; freshness depends on that source."
 elif firms_key:
     firms_df, firms_error = fetch_firms_api(firms_key, firms_source, firms_days)
     firms_is_live = firms_df is not None
@@ -2114,7 +2137,7 @@ with c4:
     st.metric("📍 Points", total_points)
 
 with c5:
-    st.metric("🔮 Max Predicted Risk", f"{max_risk:.2f}")
+    st.metric("🔥 Max Estimated Fire Score", f"{max_risk:.2f}")
 
 
 d1, d2, d3, d4, d5 = st.columns(5)
@@ -2197,7 +2220,7 @@ with tab_global_map:
     layer_options = [
         "Live EONET Events",
         "FIRMS Fires",
-        "Predicted Risk",
+        "Estimated Fire Intensity",
         "Local Fire proxy",
         "Local Heat proxy",
         "Local Smoke proxy",
@@ -2328,9 +2351,9 @@ with tab_global_map:
             size = None
             color_scale = "Viridis"
 
-            if layer == "Predicted Risk":
+            if layer == "Estimated Fire Intensity":
                 if risk_latest is None:
-                    st.warning("No prediction found. Run the prediction script.")
+                    st.warning("No fire intensity estimate found. Run the VIIRS workflow from the sidebar.")
 
                 else:
                     base_map = base_map.merge(
@@ -2414,27 +2437,26 @@ with tab_global_map:
 # ============================================================
 
 with tab_prediction:
-    st.markdown("## 🔮 Prediction")
+    st.markdown("## 🔥 Fire Intensity Estimate")
 
-    st.markdown("### Prediction Status")
+    st.markdown("### Model Status")
 
     risk_exists = os.path.exists(os.path.join(OUTPUT_DIR, "future_risk.csv"))
-    trend_exists = os.path.exists(os.path.join(OUTPUT_DIR, "trend_report.csv"))
-    model_exists = os.path.exists(os.path.join(OUTPUT_DIR, "risk_model.pkl"))
+    model_exists = os.path.exists(os.path.join(OUTPUT_DIR, "risk_model.keras"))
     scaler_exists = os.path.exists(os.path.join(OUTPUT_DIR, "scaler.pkl"))
 
-    st.write(f"future_risk.csv: {'✅' if risk_exists else '❌'}")
-    st.write(f"trend_report.csv: {'✅' if trend_exists else '❌'}")
-    st.write(f"risk_model.pkl: {'✅' if model_exists else '❌'}")
-    st.write(f"scaler.pkl: {'✅' if scaler_exists else '❌'}")
+    st.write(f"Saved VIIRS intensity estimates: {'✅' if risk_exists else '❌'}")
+    st.write(f"Trained model: {'✅' if model_exists else '❌'}")
+    st.write(f"Saved feature preprocessing: {'✅' if scaler_exists else '❌'}")
 
     if risk is None:
-        st.warning("No prediction found. Run the prediction script from the sidebar.")
+        st.warning("No estimate found. Run the VIIRS workflow from the sidebar.")
 
     else:
         risk_col = None
 
         preferred = [
+            "latest_risk",
             "risk_next_horizon",
             "risk",
             "probability",
@@ -2457,12 +2479,12 @@ with tab_prediction:
             st.warning("No numeric risk column found.")
 
         else:
-            st.markdown("### Saved Model Risk Scores")
-            st.caption("This is output from the local prediction file, not a live NASA observation or a verified disaster probability.")
+            st.markdown("### Estimated Fire Intensity")
+            st.caption("This model estimates fire radiative power for detections in the bundled VIIRS FIRMS file. The 0–1 map score is FRP / (FRP + 10); it is not a fire probability or a forecast.")
 
             risk_values = pd.to_numeric(risk[risk_col], errors="coerce").dropna()
             if not risk_values.empty and ((risk_values <= 1e-5).any() or (risk_values >= 1 - 1e-5).any()):
-                st.warning("Some model scores are almost exactly 0 or 1. Treat these as uncalibrated model outputs, not certainty that an event will or will not happen.")
+                st.caption("The bounded display score approaches 0 or 1 for very low or high estimated intensity.")
 
             if "date" in risk.columns:
                 risk_plot = risk.copy()
@@ -2470,7 +2492,7 @@ with tab_prediction:
                 valid_dates = risk_plot["date"].dropna()
                 if not valid_dates.empty and valid_dates.max().date() < datetime.date.today():
                     st.warning(
-                        f"This saved output ends on {valid_dates.max().date()}; it is historical and is not a current forecast."
+                        f"This saved sample ends on {valid_dates.max().date()}; it is historical, not a live estimate."
                     )
                 if not valid_dates.empty:
                     fig = px.line(
@@ -2479,12 +2501,12 @@ with tab_prediction:
                         y=risk_col,
                         color="region" if "region" in risk_plot.columns else None,
                         height=480,
-                        title="Saved model scores by date",
+                        title="Estimated fire intensity score by date",
                     )
                     fig = make_dark_fig(fig)
                     st.plotly_chart(fig, width="stretch", key="chart_prediction_timeline")
 
-            st.markdown("### Most Recent Saved Model Score")
+            st.markdown("### Most Recent Saved Intensity Score")
 
             if risk_latest is not None:
                 st.dataframe(
@@ -2816,6 +2838,8 @@ with tab_live_fire:
     else:
         if firms_is_live:
             st.success(f"Loaded {len(firms_df)} live fire detections from NASA FIRMS.")
+        elif firms_url:
+            st.info(f"Loaded {len(firms_df):,} detections from the configured CSV URL. {firms_error}")
         else:
             st.warning(firms_error)
             st.caption(f"Showing {len(firms_df):,} saved detections; this snapshot is not live.")
@@ -3014,8 +3038,8 @@ with tab_sources:
 
         - Local `.csv` / `.cvv` files inside `data/`
         - `output/future_risk.csv`
-        - `output/trend_report.csv`
-        - `output/risk_model.pkl`
+        - `output/risk_model.keras`
+        - `output/model_metadata.pkl`
         - `output/scaler.pkl`
 
         ### Hazards Tracked

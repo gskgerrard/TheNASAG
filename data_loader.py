@@ -8,15 +8,15 @@ from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
 
-FEATURES = ['lat', 'lon', 'brightness_temp', 'precip_mm_day', 'soil_moisture']
+FEATURES = ['latitude', 'longitude', 'bright_ti4', 'scan', 'track', 'bright_ti5']
 TARGET = 'frp'
 
 
-def generate_synthetic_nasa_data(timesteps=60, lat=64, lon=64, random_state=42):
+def generate_synthetic_environment_data(timesteps=60, lat=64, lon=64, random_state=42):
     """Create a small synthetic spatiotemporal demo grid.
 
-    Despite the compatibility name, these generated CO/IR-like channels are
-    not NASA observations and must not be used as real environmental data.
+    These generated CO/IR-like channels are not NASA observations and must not
+    be used as real environmental data.
     The output shape is (time, latitude, longitude, 2).
     """
     if any(not isinstance(size, (int, np.integer)) or size < 1
@@ -87,6 +87,17 @@ def load_and_prepare_data(file_path, features=None, target=TARGET,
 
     logger.info("Loading %s", file_path)
     df = pd.read_csv(file_path)
+
+    # Normalize the official VIIRS FIRMS names used by the bundled dataset.
+    aliases = {
+        'latitude': 'lat', 'longitude': 'lon',
+        'bright_ti4': 'brightness_temp', 'bright_ti5': 'brightness_temp_5',
+    }
+    df = df.rename(columns={source: target_name for source, target_name in aliases.items()
+                            if source in df.columns and target_name not in df.columns})
+
+    # Preserve compatibility with either the original FIRMS names or normalized names.
+    features = [aliases.get(c, c) for c in features]
 
     # --- fail loudly on schema mismatch (issues 1 & 2) ---
     missing = [c for c in features + [target] if c not in df.columns]
