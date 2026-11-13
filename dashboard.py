@@ -2010,7 +2010,7 @@ with st.sidebar:
         ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT"],
         help="Near real-time active fire detections from NASA FIRMS."
     )
-    firms_days = st.slider("FIRMS lookback days", 1, 5, 1)
+    firms_days = st.slider("FIRMS lookback days", 1, 5, 5)
     include_low_confidence = st.checkbox(
         "Include low-confidence detections",
         value=False,
@@ -2046,14 +2046,49 @@ with st.sidebar:
 # ============================================================
 
 live_events, live_error = fetch_eonet_events(limit=event_limit)
+firms_url_loaded = False
 
 if firms_url:
     firms_df, firms_error = fetch_firms_url(firms_url)
+    firms_url_loaded = firms_df is not None
     firms_is_live = False
+    firms_source_used = "CSV URL"
     if firms_df is not None:
         firms_error = "Showing the configured FIRMS CSV URL; freshness depends on that source."
 elif firms_key:
     firms_df, firms_error = fetch_firms_api(firms_key, firms_source, firms_days)
+    firms_source_used = firms_source
+    if firms_df is None and firms_error == "NASA FIRMS returned no fire detections for this period.":
+        other_sources = [
+            source for source in [
+                "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "VIIRS_SNPP_NRT", "MODIS_NRT"
+            ]
+            if source != firms_source
+        ]
+        empty_sources = [firms_source]
+        for alternate_source in other_sources:
+            alternate_df, alternate_error = fetch_firms_api(
+                firms_key, alternate_source, firms_days
+            )
+            if alternate_df is not None:
+                firms_df = alternate_df
+                firms_source_used = alternate_source
+                firms_error = (
+                    f"{firms_source} returned no detections; showing live results from "
+                    f"{alternate_source} for the last {firms_days} days."
+                )
+                break
+            if alternate_error == "NASA FIRMS returned no fire detections for this period.":
+                empty_sources.append(alternate_source)
+            elif alternate_error:
+                firms_error = alternate_error
+                break
+        else:
+            firms_error = (
+                "NASA FIRMS returned no detections from the selected or alternate "
+                f"feeds ({', '.join(empty_sources)}) for the last {firms_days} days. "
+                "Try another lookback period or check the feed again later."
+            )
     firms_is_live = firms_df is not None
 else:
     firms_df, firms_error = None, (
@@ -2062,6 +2097,15 @@ else:
         "session where NASA_FIRMS_MAP_KEY is set."
     )
     firms_is_live = False
+    firms_source_used = firms_source
+
+firms_display_source = (
+    f"live NASA FIRMS feed: {firms_source_used}"
+    if firms_is_live
+    else "configured FIRMS CSV URL"
+    if firms_url_loaded
+    else "saved local FIRMS snapshot (not live)"
+)
 
 if firms_df is None:
     local_firms_df = local_firms_snapshot(raw_data)
@@ -2314,11 +2358,11 @@ with tab_global_map:
                 if map_view == "Thermal vision":
                     render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
                                           thermal=True,
-                                          pixel_size_meters=1000 if firms_source == "MODIS_NRT" else 375,
+                                          pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
                                           key="map_firms_global_thermal_leaflet")
                 else:
                     render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
-                                          pixel_size_meters=1000 if firms_source == "MODIS_NRT" else 375,
+                                          pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
                                           key="map_firms_global_leaflet")
             else:
                 fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
@@ -2329,9 +2373,9 @@ with tab_global_map:
                     key="map_firms_global",
                 )
             if map_view == "Thermal vision":
-                st.caption("Thermal vision colors only supported clusters of NASA FIRMS fire detections. Color shows relative satellite fire radiative power (FRP), not ground temperature or a fire perimeter. Empty areas have no plotted detections; isolated detections remain visible on the standard map.")
+                st.caption(f"Data source: {firms_display_source}. Thermal vision colors supported clusters of NASA FIRMS fire detections by relative satellite fire radiative power (FRP), not ground temperature or fire perimeters. Empty areas have no plotted detections; isolated detections remain visible on the standard map.")
             else:
-                st.caption("NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
+                st.caption(f"Data source: {firms_display_source}. NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
             st.dataframe(firms_df.head(1000), width="stretch")
 
@@ -2837,7 +2881,9 @@ with tab_live_fire:
         st.info(firms_error)
     else:
         if firms_is_live:
-            st.success(f"Loaded {len(firms_df)} live fire detections from NASA FIRMS.")
+            st.success(f"Loaded {len(firms_df):,} live fire detections from NASA FIRMS ({firms_source_used}).")
+            if firms_error:
+                st.info(firms_error)
         elif firms_url:
             st.info(f"Loaded {len(firms_df):,} detections from the configured CSV URL. {firms_error}")
         else:
@@ -2869,11 +2915,11 @@ with tab_live_fire:
             if map_view == "Thermal vision":
                 render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
                                       thermal=True,
-                                      pixel_size_meters=1000 if firms_source == "MODIS_NRT" else 375,
+                                      pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
                                       key="map_firms_live_thermal_leaflet")
             else:
                 render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
-                                      pixel_size_meters=1000 if firms_source == "MODIS_NRT" else 375,
+                                      pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
                                       key="map_firms_live_leaflet")
         else:
             map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="firms_map_style")
@@ -2923,7 +2969,7 @@ with tab_tables:
     if firms_df is None:
         st.info(firms_error)
     else:
-        source_label = "live NASA FIRMS feed" if firms_is_live else "saved snapshot (not live)"
+        source_label = firms_display_source
         visible_firms = table_preview(firms_df)
         st.caption(f"Showing {len(visible_firms):,} of {len(firms_df):,} rows · {source_label}")
         st.dataframe(visible_firms, width="stretch", height=520)
