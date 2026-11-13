@@ -641,8 +641,8 @@ if (nasaLayer === 'MODIS_Terra_Land_Surface_Temp_Day') {
     time:nasaDate, tiled:true, attribution:'NASA EOSDIS GIBS'
   }).addTo(map);
 }
-nasa.on('tileload', () => { loaded = true; status.textContent = 'NASA GIBS image tile received · ' + nasaDate + ' · blank areas may have no retrieval'; });
-nasa.on('tileerror', () => { errors += 1; if (!loaded && errors >= 4) status.textContent = 'No NASA imagery returned for this layer/date. Try another observation date; satellite coverage can be sparse.'; });
+nasa.on('tileload', () => { loaded = true; status.textContent = 'NASA GIBS responded for ' + nasaDate + ' · transparent tiles mean no visible retrieval at this zoom/date'; });
+nasa.on('tileerror', () => { errors += 1; if (!loaded && errors >= 4) status.textContent = 'NASA returned no usable tiles for this layer/date. Try another date or product; satellite coverage can be sparse.'; });
 setTimeout(() => { if (!loaded && errors === 0) status.textContent = 'Waiting for NASA GIBS imagery…'; }, 8000);
 const resizeGibsMap=()=>map.invalidateSize({pan:false});requestAnimationFrame(()=>requestAnimationFrame(resizeGibsMap));setTimeout(resizeGibsMap,300);new ResizeObserver(resizeGibsMap).observe(document.getElementById('map'));
 </script></body></html>"""
@@ -2701,7 +2701,7 @@ with tab_atmosphere:
         {
             "name": "Carbon dioxide (CO₂)",
             "instrument": "OCO-2 · total-column average",
-            "layer": "OCO_Carbon_Dioxide_Total_Column_Average",
+            "layer": "OCO-2_Carbon_Dioxide_Total_Column_Average",
             "description": "Satellite XCO₂ observations show regional patterns. Coverage is sparse between satellite overpasses.",
             "period": "Satellite observations; revisit and cloud gaps apply",
         },
