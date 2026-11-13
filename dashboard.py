@@ -2824,59 +2824,8 @@ with tab_live_events:
 
 with tab_live_fire:
     st.markdown("## 🔥 Live Fire")
-
-    st.markdown("### EONET Fire Events")
-
-    if live_events is None:
-        show_eonet_connection_help(live_error)
-    elif live_error:
-        st.warning(f"⚠️ {live_error}")
-    elif live_events.empty:
-        st.info("No live events found.")
-
-    else:
-        fire_events = live_events[live_events["hazard"] == "Fire"].copy()
-
-        if fire_events.empty:
-            st.info("No live fire events detected by EONET.")
-        else:
-            st.dataframe(fire_events, width="stretch")
-            mapped_fire_events = fire_events.dropna(subset=["lat", "lon"])
-            if mapped_fire_events.empty:
-                st.info("EONET has no coordinates for these fire events yet; the event records remain available above.")
-            else:
-                map_view = st.radio(
-                    "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
-                    horizontal=True, key="live_fire_eonet_map_view",
-                )
-                if map_view != "Globe / flat map":
-                    render_leaflet_points(mapped_fire_events, color_by="hazard", category_colors=HAZARD_COLORS,
-                                          popup_columns=["title", "hazard", "categories", "date"], height=560,
-                                          thermal=map_view == "Thermal vision",
-                                          key="map_eonet_live_fire_leaflet")
-                else:
-                    map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="live_fire_map_style")
-                    projection = "orthographic" if map_style == "Globe" else "natural earth"
-                    fig = px.scatter_geo(
-                        mapped_fire_events,
-                        lat="lat",
-                        lon="lon",
-                        color="hazard",
-                        hover_name="title",
-                        color_discrete_map=HAZARD_COLORS,
-                        projection=projection,
-                        height=560,
-                    )
-                    fig = make_geo_fig(fig)
-                    st.plotly_chart(
-                        fig,
-                        width="stretch",
-                        config={"responsive": True, "displaylogo": False, "scrollZoom": True},
-                        key="map_eonet_live_fire",
-                    )
-
-    st.markdown("### FIRMS Fire Feed")
-    st.caption("Look for the larger orange/red dots on the map. Each dot is a satellite hotspot detection; zoom in or click it for details. These are not flame icons or fire boundaries.")
+    st.markdown("### Live satellite hotspots · NASA FIRMS")
+    st.caption("This is the live detection map. Orange/red dots are satellite hotspots; zoom in or click one for details. These are not flame icons or fire boundaries.")
 
     if firms_df is None:
         st.info(firms_error)
@@ -2890,23 +2839,6 @@ with tab_live_fire:
         else:
             st.warning(firms_error)
             st.caption(f"Showing {len(firms_df):,} saved detections; this snapshot is not live.")
-
-        if "date" in firms_df.columns:
-            timeline = (
-                firms_df.groupby(pd.Grouper(key="date", freq="D"))
-                .size()
-                .reset_index(name="fire_count")
-            )
-
-            fig = px.line(
-                timeline,
-                x="date",
-                y="fire_count",
-                height=380
-            )
-
-            fig = make_dark_fig(fig)
-            st.plotly_chart(fig, width="stretch", key="chart_firms_timeline")
 
         map_view = st.radio(
             "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
@@ -2935,9 +2867,32 @@ with tab_live_fire:
         if map_view == "Thermal vision":
             st.caption("Thermal vision colors only supported clusters of NASA FIRMS fire detections. Color shows relative satellite fire radiative power (FRP), not ground temperature or a fire perimeter. Empty areas have no plotted detections; isolated detections remain visible on the standard map.")
         else:
-            st.caption("NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
+            st.caption("NASA FIRMS detections are shown as orange/red points. A detection does not confirm a wildfire; use the table for the full feed.")
+
+        if "date" in firms_df.columns:
+            timeline = (
+                firms_df.groupby(pd.Grouper(key="date", freq="D"))
+                .size()
+                .reset_index(name="fire_count")
+            )
+            fig = px.line(timeline, x="date", y="fire_count", height=380)
+            fig = make_dark_fig(fig)
+            st.plotly_chart(fig, width="stretch", key="chart_firms_timeline")
 
         st.dataframe(firms_df.head(1000), width="stretch")
+
+    st.markdown("### NASA EONET fire reports")
+    st.caption("EONET is a curated event list, separate from FIRMS satellite detections. Use the Live Events tab for event maps and full details.")
+    if live_events is None:
+        st.info(live_error)
+    elif live_error:
+        st.warning(live_error)
+    else:
+        fire_events = live_events[live_events["hazard"] == "Fire"].copy()
+        if fire_events.empty:
+            st.info("No open EONET fire reports in this response.")
+        else:
+            st.dataframe(fire_events, width="stretch")
 
 
 # ============================================================
