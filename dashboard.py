@@ -513,7 +513,7 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
         mode="markers",
         marker=(
             dict(
-                size=5,
+                size=9,
                 color=frp,
                 cmin=0,
                 cmax=max(float(frp.quantile(0.98)), 1.0),
@@ -522,7 +522,7 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
                 colorbar=dict(title="FRP<br>MW", thickness=11, len=0.55),
                 line=dict(color="rgba(8, 15, 25, 0.8)", width=0.4),
             ) if float(frp.max()) > 0 else dict(
-                size=5,
+                size=9,
                 color="#ff8c00",
                 line=dict(color="rgba(8, 15, 25, 0.8)", width=0.4),
             )
@@ -535,9 +535,9 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
     fig.update_layout(
         title=dict(
             text=(
-                f"Thermal anomaly detections · {len(df):,} of {total_detections:,} plotted"
+                f"FIRMS hotspots · {len(df):,} of {total_detections:,} plotted"
                 if len(df) < total_detections
-                else f"Thermal anomaly detections · {total_detections:,}"
+                else f"FIRMS hotspots · {total_detections:,}"
             ),
             x=0.02,
             xanchor="left",
@@ -2876,6 +2876,7 @@ with tab_live_fire:
                     )
 
     st.markdown("### FIRMS Fire Feed")
+    st.caption("Look for the larger orange/red dots on the map. Each dot is a satellite hotspot detection; zoom in or click it for details. These are not flame icons or fire boundaries.")
 
     if firms_df is None:
         st.info(firms_error)
