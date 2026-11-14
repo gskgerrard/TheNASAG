@@ -2084,6 +2084,59 @@ def local_firms_snapshot(raw_data):
     return snapshot.dropna(subset=["lat", "lon"])
 
 
+@st.cache_data(show_spinner=False, ttl=1800)
+def fetch_air_quality(lat, lon):
+    """Fetch modeled AQI and pollutant forecasts for one WGS84 coordinate."""
+    if not HAS_REQUESTS:
+        return None, "Install requests to load air quality data."
+    endpoint = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    current_variables = [
+        "us_aqi", "european_aqi", "pm2_5", "pm10", "ozone",
+        "nitrogen_dioxide", "sulphur_dioxide", "carbon_monoxide",
+    ]
+    try:
+        response = requests.get(
+            endpoint,
+            params={
+                "latitude": round(float(lat), 4),
+                "longitude": round(float(lon), 4),
+                "current": ",".join(current_variables),
+                "hourly": ",".join(["us_aqi", "european_aqi", "pm2_5", "pm10", "ozone"]),
+                "forecast_days": 3,
+                "timezone": "auto",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        result = response.json()
+        if result.get("error"):
+            return None, result.get("reason", "The air quality service returned an error.")
+        if not result.get("current"):
+            return None, "The air quality service returned no current readings for this location."
+        return result, None
+    except requests.exceptions.RequestException as exc:
+        return None, f"Could not reach the air quality service ({type(exc).__name__})."
+    except ValueError:
+        return None, "The air quality service returned an unreadable response."
+
+
+def us_aqi_category(value):
+    """Translate the modeled U.S. AQI value into its familiar category."""
+    if value is None or pd.isna(value):
+        return "Unavailable"
+    if value <= 50:
+        return "Good"
+    if value <= 100:
+        return "Moderate"
+    if value <= 150:
+        return "Unhealthy for sensitive groups"
+    if value <= 200:
+        return "Unhealthy"
+    if value <= 300:
+        return "Very unhealthy"
+    return "Hazardous"
+
+
 # ============================================================
 # LOAD LOCAL PREDICTION SYSTEM
 # ============================================================
@@ -3007,6 +3060,117 @@ with tab_local_hazards:
 
 with tab_atmosphere:
     st.markdown("## 🌫️ Air & Atmosphere")
+    st.markdown("### 🌬️ Current Air Quality")
+    st.caption("Check modeled AQI and pollutant levels for a project location or a coordinate you choose.")
+
+    aqi_locations = registry.dropna(subset=["lat", "lon"]).copy() if registry is not None and not registry.empty else pd.DataFrame(columns=["region", "lat", "lon"])
+    if country_scope_mode == "Selected countries":
+        aqi_locations = filter_points_to_country_scope(
+            aqi_locations, selected_countries, True, country_boundaries
+        )
+    aqi_location_lookup = {}
+    for _, location_row in aqi_locations.iterrows():
+        country_name = country_labels_for_points(aqi_locations.loc[[location_row.name]], country_boundaries).iloc[0]
+        location_label = f"{location_row['region']} · {country_name} ({float(location_row['lat']):.2f}, {float(location_row['lon']):.2f})"
+        aqi_location_lookup[location_label] = (float(location_row["lat"]), float(location_row["lon"]))
+    aqi_manual_label = "Enter coordinates manually"
+    aqi_location_choices = list(aqi_location_lookup) + [aqi_manual_label]
+    selected_aqi_location = st.selectbox(
+        "AQI location",
+        aqi_location_choices,
+        key="air_quality_location_choice",
+    )
+
+    if selected_aqi_location == aqi_manual_label:
+        location_name = st.text_input("Location name", value="My location", key="air_quality_location_name").strip() or "My location"
+        aqi_lat_col, aqi_lon_col = st.columns(2)
+        with aqi_lat_col:
+            aqi_lat = st.number_input("Latitude", min_value=-90.0, max_value=90.0, value=0.0, step=0.1, key="air_quality_latitude")
+        with aqi_lon_col:
+            aqi_lon = st.number_input("Longitude", min_value=-180.0, max_value=180.0, value=0.0, step=0.1, key="air_quality_longitude")
+    else:
+        location_name = selected_aqi_location
+        aqi_lat, aqi_lon = aqi_location_lookup[selected_aqi_location]
+
+    if st.button("Load current AQI", key="load_air_quality"):
+        with st.spinner(f"Loading air quality for {location_name}…"):
+            air_quality_result, air_quality_error = fetch_air_quality(aqi_lat, aqi_lon)
+        if air_quality_error:
+            st.session_state.pop("air_quality_snapshot", None)
+            st.error(air_quality_error)
+        else:
+            st.session_state["air_quality_snapshot"] = {
+                "location": location_name,
+                "lat": round(float(aqi_lat), 4),
+                "lon": round(float(aqi_lon), 4),
+                "data": air_quality_result,
+            }
+
+    saved_air_quality = st.session_state.get("air_quality_snapshot")
+    if saved_air_quality and saved_air_quality["lat"] == round(float(aqi_lat), 4) and saved_air_quality["lon"] == round(float(aqi_lon), 4):
+        air_quality = saved_air_quality["data"]
+        current_air = air_quality.get("current", {})
+        current_units = air_quality.get("current_units", {})
+        us_aqi = current_air.get("us_aqi")
+        category = us_aqi_category(us_aqi)
+        if category == "Good":
+            st.success(f"{saved_air_quality['location']} · {category} air quality")
+        elif category in {"Moderate", "Unhealthy for sensitive groups"}:
+            st.warning(f"{saved_air_quality['location']} · {category} air quality")
+        elif category == "Unavailable":
+            st.info(f"Air quality data loaded for {saved_air_quality['location']}.")
+        else:
+            st.error(f"{saved_air_quality['location']} · {category} air quality")
+
+        def aqi_metric(variable, label, unit=None):
+            value = current_air.get(variable)
+            if value is None or pd.isna(value):
+                return "—"
+            number = f"{float(value):.0f}" if variable in {"us_aqi", "european_aqi"} else f"{float(value):.1f}"
+            display_unit = unit or current_units.get(variable, "")
+            return f"{number} {display_unit}".strip()
+
+        aq1, aq2, aq3, aq4 = st.columns(4)
+        aq1.metric("U.S. AQI", aqi_metric("us_aqi", "U.S. AQI"), category)
+        aq2.metric("European AQI", aqi_metric("european_aqi", "European AQI"))
+        aq3.metric("PM₂.₅", aqi_metric("pm2_5", "PM₂.₅"))
+        aq4.metric("PM₁₀", aqi_metric("pm10", "PM₁₀"))
+
+        st.markdown("#### Other pollutants")
+        ap1, ap2, ap3, ap4 = st.columns(4)
+        ap1.metric("Ozone (O₃)", aqi_metric("ozone", "Ozone"))
+        ap2.metric("Nitrogen dioxide (NO₂)", aqi_metric("nitrogen_dioxide", "NO₂"))
+        ap3.metric("Sulfur dioxide (SO₂)", aqi_metric("sulphur_dioxide", "SO₂"))
+        ap4.metric("Carbon monoxide (CO)", aqi_metric("carbon_monoxide", "CO"))
+
+        hourly_air = air_quality.get("hourly", {})
+        hourly_times = pd.to_datetime(hourly_air.get("time", []), errors="coerce")
+        chart_options = {
+            "U.S. AQI": ("us_aqi", "AQI"),
+            "European AQI": ("european_aqi", "AQI"),
+            "PM₂.₅": ("pm2_5", "µg/m³"),
+            "PM₁₀": ("pm10", "µg/m³"),
+            "Ozone (O₃)": ("ozone", "µg/m³"),
+        }
+        chart_options = {name: spec for name, spec in chart_options.items() if spec[0] in hourly_air}
+        if chart_options and len(hourly_times):
+            chart_name = st.selectbox("Next 3 days", list(chart_options), key="air_quality_chart_variable")
+            chart_variable, chart_unit = chart_options[chart_name]
+            chart_frame = pd.DataFrame({"Time": hourly_times, "Value": hourly_air[chart_variable]})
+            chart_frame["Value"] = pd.to_numeric(chart_frame["Value"], errors="coerce")
+            chart_frame = chart_frame.dropna(subset=["Time", "Value"]).head(72)
+            if not chart_frame.empty:
+                chart = px.line(chart_frame, x="Time", y="Value", height=330, title=f"{chart_name} · {chart_unit}")
+                st.plotly_chart(make_dark_fig(chart), width="stretch", key="air_quality_trend_chart")
+
+        model_lat = air_quality.get("latitude", saved_air_quality["lat"])
+        model_lon = air_quality.get("longitude", saved_air_quality["lon"])
+        st.caption(f"Modeled estimate for the nearest grid cell ({float(model_lat):.3f}, {float(model_lon):.3f}); current model time: {current_air.get('time', 'unavailable')} {air_quality.get('timezone_abbreviation', '')}.")
+    else:
+        st.info("Choose a location and select **Load current AQI** to fetch the estimate.")
+
+    st.caption("This is a model-based estimate, not a ground-monitor reading. Forecast coverage is about 11 km in Europe and 45 km globally. Sources: [Open-Meteo Air Quality API](https://open-meteo.com/en/docs/air-quality-api) and [Copernicus Atmosphere Monitoring Service (CAMS)](https://atmosphere.copernicus.eu/).")
+
     st.markdown(
         "View NASA satellite observations directly on this dashboard. These "
         "products measure atmospheric columns or aerosols from space; they are "
