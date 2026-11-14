@@ -2274,12 +2274,15 @@ with st.sidebar:
 
     if predictor_script:
         st.caption("Uses the bundled VIIRS FIRMS sample; this is not a live forecast.")
+        allow_local_training = os.getenv("ALLOW_LOCAL_MODEL_TRAINING", "").strip().lower() in {"1", "true", "yes"}
         ml_dependencies_available = all(
             importlib.util.find_spec(package) is not None
             for package in ("tensorflow", "sklearn", "joblib")
         )
-        if not ml_dependencies_available:
-            st.caption("Model training is optional and unavailable on this lightweight deployment. Install `requirements-ml.txt` to run it locally.")
+        if not allow_local_training:
+            st.caption("Model training is disabled in this dashboard to keep the app responsive. To enable it locally, install `requirements-ml.txt` and set `ALLOW_LOCAL_MODEL_TRAINING=1`.")
+        elif not ml_dependencies_available:
+            st.caption("Optional training packages are missing. Install `requirements-ml.txt` to run the model locally.")
         elif st.button("▶️ Train & Estimate Sample"):
             with st.spinner("Training the VIIRS model and estimating fire intensity..."):
                 result = subprocess.run(
