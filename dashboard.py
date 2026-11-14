@@ -2223,22 +2223,25 @@ with tab_command:
             "No local input files found. Put `.csv` or `.cvv` files into `data/`."
         )
     else:
-        st.dataframe(file_summary, width="stretch")
+        st.caption(f"{files_loaded:,} local file(s) loaded")
+        with st.expander("Browse local input files"):
+            st.dataframe(file_summary, width="stretch")
 
     st.markdown("### Region Registry")
 
     if registry.empty:
         st.info("No regions detected.")
     else:
-        st.dataframe(registry, width="stretch")
+        st.caption(f"{len(registry):,} regions in the local registry")
+        with st.expander("Browse region coordinates and signals"):
+            st.dataframe(registry, width="stretch")
 
-    st.markdown("### Loading Log")
-
-    if logs:
-        for log in logs:
-            st.text(log)
-    else:
-        st.info("No log messages.")
+    with st.expander("Loading details"):
+        if logs:
+            for log in logs:
+                st.text(log)
+        else:
+            st.caption("No log messages.")
 
 
 # ============================================================
@@ -2462,7 +2465,8 @@ with tab_global_map:
                         key="map_local_global",
                     )
 
-                st.dataframe(map_df, width="stretch")
+                with st.expander("View mapped local records"):
+                    st.dataframe(map_df, width="stretch")
 
 
 # ============================================================
@@ -2542,13 +2546,14 @@ with tab_prediction:
             st.markdown("### Most Recent Saved Intensity Score")
 
             if risk_latest is not None:
-                st.dataframe(
-                    risk_latest.sort_values("latest_risk", ascending=False),
-                    width="stretch"
-                )
+                latest_sorted = risk_latest.sort_values("latest_risk", ascending=False)
+                if not latest_sorted.empty:
+                    st.caption(f"Highest score: {latest_sorted.iloc[0].get('region', 'Unknown region')} · {float(latest_sorted.iloc[0]['latest_risk']):.2f}")
+                with st.expander("Browse latest scores by region"):
+                    st.dataframe(latest_sorted, width="stretch")
 
-            st.markdown("### Full Risk Table")
-            st.dataframe(risk, width="stretch")
+            with st.expander("Browse all saved risk records"):
+                st.dataframe(risk, width="stretch")
 
     st.markdown("### Trend Report")
 
@@ -2558,9 +2563,12 @@ with tab_prediction:
     else:
         if "significant" in trends.columns:
             significant_trends = trends[trends["significant"] == True]
-            st.dataframe(significant_trends, width="stretch")
+            st.caption(f"{len(significant_trends):,} significant trend(s) found")
+            with st.expander("Browse significant trends"):
+                st.dataframe(significant_trends, width="stretch")
         else:
-            st.dataframe(trends, width="stretch")
+            with st.expander("Browse trend report"):
+                st.dataframe(trends, width="stretch")
 
 
 # ============================================================
@@ -2625,8 +2633,9 @@ with tab_local_hazards:
 
             if point_summary is not None and col in point_summary.columns:
                 top_points = point_summary.sort_values(col, ascending=False).head(100)
-
-                st.dataframe(top_points, width="stretch")
+                st.caption(f"Showing the strongest {len(top_points):,} mapped locations for this signal.")
+                with st.expander("Browse location records"):
+                    st.dataframe(top_points, width="stretch")
 
                 map_df = top_points.dropna(subset=["lat", "lon"])
 
@@ -2868,7 +2877,8 @@ with tab_live_fire:
             fig = make_dark_fig(fig)
             st.plotly_chart(fig, width="stretch", key="chart_firms_timeline")
 
-        st.dataframe(firms_df.head(1000), width="stretch")
+        with st.expander("View fire detection records"):
+            st.dataframe(firms_df.head(1000), width="stretch")
 
     st.markdown("### NASA EONET fire reports")
     st.caption("EONET is a curated event list, separate from FIRMS satellite detections. Use the Live Events tab for event maps and full details.")
@@ -2881,7 +2891,8 @@ with tab_live_fire:
         if fire_events.empty:
             st.info("No open EONET fire reports in this response.")
         else:
-            st.dataframe(fire_events, width="stretch")
+            with st.expander("View EONET fire records"):
+                st.dataframe(fire_events, width="stretch")
 
 
 # ============================================================
