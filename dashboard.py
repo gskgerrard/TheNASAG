@@ -5,6 +5,8 @@ import sys
 import subprocess
 import time
 import datetime
+import smtplib
+from email.message import EmailMessage
 import json
 from pathlib import Path
 from io import StringIO
@@ -2084,7 +2086,7 @@ def local_firms_snapshot(raw_data):
     return snapshot.dropna(subset=["lat", "lon"])
 
 
-@st.cache_data(show_spinner=False, ttl=1800)
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_air_quality(lat, lon):
     """Fetch modeled AQI and pollutant forecasts for one WGS84 coordinate."""
     if not HAS_REQUESTS:
@@ -2118,6 +2120,75 @@ def fetch_air_quality(lat, lon):
         return None, f"Could not reach the air quality service ({type(exc).__name__})."
     except ValueError:
         return None, "The air quality service returned an unreadable response."
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def search_air_quality_places(query):
+    """Resolve a city, region, or postal code to a short list of places."""
+    if not HAS_REQUESTS:
+        return [], "Install requests to search for locations."
+    try:
+        response = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": str(query).strip(), "count": 8, "language": "en", "format": "json"},
+            timeout=12,
+        )
+        response.raise_for_status()
+        return response.json().get("results", []), None
+    except requests.exceptions.RequestException as exc:
+        return [], f"Could not search locations ({type(exc).__name__})."
+
+
+def get_alert_secret(name, default=""):
+    """Read alert-provider configuration from environment or Streamlit secrets."""
+    value = os.getenv(name, "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, default)).strip()
+    except Exception:
+        return default
+
+
+def send_aqi_email(recipient, subject, body):
+    host = get_alert_secret("SMTP_HOST")
+    username = get_alert_secret("SMTP_USER")
+    password = get_alert_secret("SMTP_PASSWORD")
+    sender = get_alert_secret("SMTP_FROM", username)
+    if not all([host, username, password, sender]):
+        return False, "Add SMTP_HOST, SMTP_USER, SMTP_PASSWORD, and SMTP_FROM to app secrets to enable email."
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
+    try:
+        with smtplib.SMTP(host, int(get_alert_secret("SMTP_PORT", "587")), timeout=15) as server:
+            server.starttls()
+            server.login(username, password)
+            server.send_message(message)
+        return True, None
+    except Exception as exc:
+        return False, f"Email delivery failed ({type(exc).__name__})."
+
+
+def send_aqi_sms(recipient, body):
+    account = get_alert_secret("TWILIO_ACCOUNT_SID")
+    token = get_alert_secret("TWILIO_AUTH_TOKEN")
+    sender = get_alert_secret("TWILIO_FROM_NUMBER")
+    if not all([account, token, sender]):
+        return False, "Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER to app secrets to enable texts."
+    try:
+        response = requests.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{account}/Messages.json",
+            data={"To": recipient, "From": sender, "Body": body},
+            auth=(account, token),
+            timeout=15,
+        )
+        response.raise_for_status()
+        return True, None
+    except Exception as exc:
+        return False, f"Text delivery failed ({type(exc).__name__})."
 
 
 def us_aqi_category(value):
@@ -3061,7 +3132,28 @@ with tab_local_hazards:
 with tab_atmosphere:
     st.markdown("## 🌫️ Air & Atmosphere")
     st.markdown("### 🌬️ Current Air Quality")
-    st.caption("Check modeled AQI and pollutant levels for a project location or a coordinate you choose.")
+    st.caption("Search a city or postcode, compare places, and follow AQI changes. Estimates are modelled, not street monitors.")
+
+    search_col, search_button_col = st.columns([4, 1])
+    with search_col:
+        aqi_place_query = st.text_input("Find a city or postcode", placeholder="e.g. Jakarta, Indonesia", key="air_quality_place_query")
+    with search_button_col:
+        st.write("")
+        aqi_search_clicked = st.button("Search places", key="air_quality_search_places", width="stretch")
+    if aqi_search_clicked:
+        if len(aqi_place_query.strip()) < 2:
+            st.warning("Enter at least two characters to search.")
+        else:
+            with st.spinner("Finding places…"):
+                place_results, place_error = search_air_quality_places(aqi_place_query)
+            if place_error:
+                st.error(place_error)
+            elif not place_results:
+                st.info("No matching places found. Try adding a country, such as ‘Jakarta, Indonesia’.")
+            else:
+                st.session_state["air_quality_place_results"] = place_results
+
+    searched_places = st.session_state.get("air_quality_place_results", [])
 
     aqi_locations = registry.dropna(subset=["lat", "lon"]).copy() if registry is not None and not registry.empty else pd.DataFrame(columns=["region", "lat", "lon"])
     if country_scope_mode == "Selected countries":
@@ -3073,6 +3165,14 @@ with tab_atmosphere:
         country_name = country_labels_for_points(aqi_locations.loc[[location_row.name]], country_boundaries).iloc[0]
         location_label = f"{location_row['region']} · {country_name} ({float(location_row['lat']):.2f}, {float(location_row['lon']):.2f})"
         aqi_location_lookup[location_label] = (float(location_row["lat"]), float(location_row["lon"]))
+    for place in searched_places:
+        place_country = place.get("country", "")
+        if country_scope_mode == "Selected countries" and place_country not in selected_countries:
+            continue
+        place_label = " · ".join(part for part in [place.get("name", "Place"), place.get("admin1"), place_country] if part)
+        if place.get("population"):
+            place_label += f" · pop. {int(place['population']):,}"
+        aqi_location_lookup[place_label] = (float(place["latitude"]), float(place["longitude"]))
     aqi_manual_label = "Enter coordinates manually"
     aqi_location_choices = list(aqi_location_lookup) + [aqi_manual_label]
     selected_aqi_location = st.selectbox(
@@ -3092,6 +3192,140 @@ with tab_atmosphere:
         location_name = selected_aqi_location
         aqi_lat, aqi_lon = aqi_location_lookup[selected_aqi_location]
 
+    with st.expander("📍 Compare and follow places", expanded=False):
+        st.caption("Select up to five places from the local registry or your search results. Selected-country map scope also filters this list.")
+        place_choices = list(aqi_location_lookup.keys())
+        if "air_quality_followed_places" in st.session_state:
+            st.session_state["air_quality_followed_places"] = [
+                place for place in st.session_state["air_quality_followed_places"] if place in place_choices
+            ][:5]
+        followed_places = st.multiselect(
+            "Places to compare and monitor",
+            place_choices,
+            default=[selected_aqi_location] if selected_aqi_location in place_choices else [],
+            max_selections=5,
+            key="air_quality_followed_places",
+        )
+        compare_clicked = st.button("Compare AQI now", key="air_quality_compare")
+        if compare_clicked and followed_places:
+            comparison_rows = []
+            comparison_error = None
+            with st.spinner("Checking AQI across your places…"):
+                for place_label in followed_places:
+                    lat, lon = aqi_location_lookup[place_label]
+                    result, error = fetch_air_quality(lat, lon)
+                    if error:
+                        comparison_error = f"{place_label}: {error}"
+                        continue
+                    current = result.get("current", {})
+                    comparison_rows.append({
+                        "Place": place_label,
+                        "U.S. AQI": current.get("us_aqi"),
+                        "Category": us_aqi_category(current.get("us_aqi")),
+                        "PM₂.₅": current.get("pm2_5"),
+                        "PM₁₀": current.get("pm10"),
+                        "Ozone": current.get("ozone"),
+                        "Checked": current.get("time", ""),
+                    })
+            if comparison_rows:
+                comparison_frame = pd.DataFrame(comparison_rows)
+                st.session_state["air_quality_comparison"] = comparison_frame
+                for row in comparison_rows:
+                    score = row["U.S. AQI"]
+                    threshold = st.session_state.get("aqi_alert_threshold", 101)
+                    if score is not None and not pd.isna(score) and float(score) >= threshold:
+                        sent_alerts = st.session_state.setdefault("air_quality_alerted_places", {})
+                        alert_key = row["Place"]
+                        delivery_enabled = (
+                            st.session_state.get("aqi_alert_email_enabled") and st.session_state.get("aqi_alert_email", "").strip()
+                        ) or (
+                            st.session_state.get("aqi_alert_sms_enabled") and st.session_state.get("aqi_alert_phone", "").strip()
+                        )
+                        if delivery_enabled and not sent_alerts.get(alert_key):
+                            alert_text = f"AQI alert: {row['Place']} is {row['Category']} (U.S. AQI {int(float(score))})."
+                            alert_errors = []
+                            delivered = False
+                            email_to = st.session_state.get("aqi_alert_email", "").strip()
+                            sms_to = st.session_state.get("aqi_alert_phone", "").strip()
+                            if st.session_state.get("aqi_alert_email_enabled") and email_to:
+                                ok, error = send_aqi_email(email_to, "Air quality alert", alert_text)
+                                delivered = delivered or ok
+                                if error:
+                                    alert_errors.append(error)
+                            if st.session_state.get("aqi_alert_sms_enabled") and sms_to:
+                                ok, error = send_aqi_sms(sms_to, alert_text)
+                                delivered = delivered or ok
+                                if error:
+                                    alert_errors.append(error)
+                            if alert_errors:
+                                st.warning(" ".join(alert_errors))
+                            sent_alerts[alert_key] = delivered
+                    elif score is not None and not pd.isna(score):
+                        st.session_state.setdefault("air_quality_alerted_places", {})[row["Place"]] = False
+            if comparison_error:
+                st.warning(comparison_error)
+
+        comparison_frame = st.session_state.get("air_quality_comparison")
+        if comparison_frame is not None and not comparison_frame.empty:
+            st.dataframe(comparison_frame, hide_index=True, width="stretch")
+            chart_frame = comparison_frame.dropna(subset=["U.S. AQI"])
+            if not chart_frame.empty:
+                compare_chart = px.bar(chart_frame, x="Place", y="U.S. AQI", color="Category", height=330, title="Current AQI by place")
+                st.plotly_chart(make_dark_fig(compare_chart), width="stretch", key="air_quality_comparison_chart")
+
+    with st.expander("🔔 AQI reminders by email or text", expanded=False):
+        st.caption("Alerts are checked every five minutes while the dashboard is open with Auto refresh on. Delivery needs your own SMTP/Twilio settings in app secrets.")
+        st.number_input("Alert when U.S. AQI reaches", min_value=51, max_value=500, value=101, step=10, key="aqi_alert_threshold")
+        email_enabled_col, sms_enabled_col = st.columns(2)
+        with email_enabled_col:
+            st.checkbox("Email alert", key="aqi_alert_email_enabled")
+            st.text_input("Email address", placeholder="you@example.com", key="aqi_alert_email")
+        with sms_enabled_col:
+            st.checkbox("Text alert", key="aqi_alert_sms_enabled")
+            st.text_input("Phone number (include country code)", placeholder="+1 555 123 4567", key="aqi_alert_phone")
+        if country_scope_mode == "Selected countries":
+            st.caption("Alerts follow your selected country scope: " + (", ".join(selected_countries) if selected_countries else "no countries selected"))
+        else:
+            st.caption("Alerts follow places worldwide (all countries). Select countries in the dashboard country scope to narrow them.")
+        with st.expander("One-time provider setup"):
+            st.code('SMTP_HOST = "..."\nSMTP_PORT = 587\nSMTP_USER = "..."\nSMTP_PASSWORD = "..."\nSMTP_FROM = "..."\nTWILIO_ACCOUNT_SID = "..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "..."', language="toml")
+            st.caption("Store these values in Streamlit secrets or environment variables. Never paste passwords here.")
+
+    alerts_active = (
+        st.session_state.get("aqi_alert_email_enabled") and st.session_state.get("aqi_alert_email", "").strip()
+    ) or (
+        st.session_state.get("aqi_alert_sms_enabled") and st.session_state.get("aqi_alert_phone", "").strip()
+    )
+    monitor_time = time.time()
+    last_monitor_time = st.session_state.get("air_quality_last_monitor_check", 0)
+    if alerts_active and followed_places and auto_refresh and monitor_time - last_monitor_time >= 300:
+        st.session_state["air_quality_last_monitor_check"] = monitor_time
+        alert_threshold = st.session_state.get("aqi_alert_threshold", 101)
+        alerted_places = st.session_state.setdefault("air_quality_alerted_places", {})
+        for place_label in followed_places:
+            place_lat, place_lon = aqi_location_lookup[place_label]
+            monitor_result, monitor_error = fetch_air_quality(place_lat, place_lon)
+            if monitor_error:
+                continue
+            monitor_score = monitor_result.get("current", {}).get("us_aqi")
+            if monitor_score is None or pd.isna(monitor_score):
+                continue
+            if float(monitor_score) < alert_threshold:
+                alerted_places[place_label] = False
+                continue
+            if alerted_places.get(place_label):
+                continue
+            alert_message = f"AQI alert: {place_label} is {us_aqi_category(monitor_score)} (U.S. AQI {int(float(monitor_score))})."
+            delivered = False
+            if st.session_state.get("aqi_alert_email_enabled"):
+                delivered, _ = send_aqi_email(st.session_state.get("aqi_alert_email", "").strip(), "Air quality alert", alert_message)
+            if st.session_state.get("aqi_alert_sms_enabled"):
+                sms_delivered, _ = send_aqi_sms(st.session_state.get("aqi_alert_phone", "").strip(), alert_message)
+                delivered = delivered or sms_delivered
+            alerted_places[place_label] = delivered
+    elif alerts_active and followed_places and not auto_refresh:
+        st.caption("Turn on Auto refresh in the sidebar to check AQI reminders every five minutes.")
+
     if st.button("Load current AQI", key="load_air_quality"):
         with st.spinner(f"Loading air quality for {location_name}…"):
             air_quality_result, air_quality_error = fetch_air_quality(aqi_lat, aqi_lon)
@@ -3105,6 +3339,13 @@ with tab_atmosphere:
                 "lon": round(float(aqi_lon), 4),
                 "data": air_quality_result,
             }
+            current_value = air_quality_result.get("current", {}).get("us_aqi")
+            if current_value is not None and not pd.isna(current_value):
+                history = st.session_state.setdefault("air_quality_history", [])
+                now = datetime.datetime.now().astimezone()
+                if not history or history[-1]["Location"] != location_name or (now - history[-1]["Checked"]).total_seconds() >= 300:
+                    history.append({"Checked": now, "Location": location_name, "U.S. AQI": float(current_value)})
+                    st.session_state["air_quality_history"] = history[-500:]
 
     saved_air_quality = st.session_state.get("air_quality_snapshot")
     if saved_air_quality and saved_air_quality["lat"] == round(float(aqi_lat), 4) and saved_air_quality["lon"] == round(float(aqi_lon), 4):
@@ -3162,6 +3403,22 @@ with tab_atmosphere:
             if not chart_frame.empty:
                 chart = px.line(chart_frame, x="Time", y="Value", height=330, title=f"{chart_name} · {chart_unit}")
                 st.plotly_chart(make_dark_fig(chart), width="stretch", key="air_quality_trend_chart")
+
+        history = st.session_state.get("air_quality_history", [])
+        if history:
+            st.markdown("#### Your AQI history")
+            history_frame = pd.DataFrame(history)
+            history_places = history_frame["Location"].drop_duplicates().tolist()
+            visible_history_places = st.multiselect(
+                "Show history for", history_places,
+                default=[saved_air_quality["location"]] if saved_air_quality["location"] in history_places else history_places,
+                key="air_quality_history_places",
+            )
+            visible_history = history_frame[history_frame["Location"].isin(visible_history_places)]
+            if not visible_history.empty:
+                history_chart = px.line(visible_history, x="Checked", y="U.S. AQI", color="Location", markers=True, height=330, title="AQI readings saved during this session")
+                st.plotly_chart(make_dark_fig(history_chart), width="stretch", key="air_quality_history_chart")
+            st.caption("History is kept for this browser session; it starts collecting after you check a place.")
 
         model_lat = air_quality.get("latitude", saved_air_quality["lat"])
         model_lon = air_quality.get("longitude", saved_air_quality["lon"])
