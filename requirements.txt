@@ -1,6 +1,7 @@
-streamlit>=1.39
+streamlit>=1.42
 streamlit-autorefresh
 plotly
 requests
 numpy
 pandas
+Authlib>=1.3.2

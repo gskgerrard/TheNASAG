@@ -490,6 +490,24 @@ label *,
     white-space: nowrap;
 }
 
+.st-key-floating_login {
+    position: fixed !important;
+    right: 1.25rem !important;
+    bottom: 1.25rem !important;
+    z-index: 9999 !important;
+    width: max-content !important;
+    max-width: calc(100vw - 2rem) !important;
+    padding: 0.35rem !important;
+    border: 1px solid rgba(130, 196, 255, 0.35) !important;
+    border-radius: 999px !important;
+    background: rgba(10, 22, 40, 0.94) !important;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35) !important;
+}
+.st-key-floating_login button {
+    width: auto !important;
+    border-radius: 999px !important;
+}
+
 @media (max-width: 700px) {
     [data-testid="stAppViewBlockContainer"] {
         padding: 1rem 0.75rem 2rem;
@@ -508,6 +526,10 @@ label *,
         padding: 8px 10px;
         font-size: 0.8rem;
     }
+    .st-key-floating_login {
+        right: 0.65rem !important;
+        bottom: 0.65rem !important;
+    }
     [data-testid="stPlotlyChart"] {
         width: 100% !important;
         overflow-x: hidden;
@@ -520,6 +542,42 @@ label *,
 """
 
 st.markdown(CSS, unsafe_allow_html=True)
+
+
+def oidc_login_configured():
+    """Check whether Streamlit's default OIDC provider is configured."""
+    try:
+        auth_settings = st.secrets.get("auth", {})
+        return all(auth_settings.get(field) for field in (
+            "client_id", "client_secret", "server_metadata_url", "redirect_uri", "cookie_secret"
+        ))
+    except Exception:
+        return False
+
+
+def current_user_logged_in():
+    """Return False on versions or deployments without identity configuration."""
+    try:
+        return bool(getattr(st.user, "is_logged_in", False))
+    except Exception:
+        return False
+
+
+@st.dialog("Your Earth Emergency Command account")
+def show_login_dialog():
+    if current_user_logged_in():
+        user_name = getattr(st.user, "name", None) or getattr(st.user, "email", None) or "Signed-in user"
+        st.success(f"You’re signed in as {user_name}.")
+        if st.button("Log out", key="login_dialog_logout", width="stretch"):
+            st.logout()
+    elif oidc_login_configured() and hasattr(st, "login"):
+        st.write("Sign in is optional. Continue with the account configured for this app.")
+        if st.button("Continue to sign in", type="primary", key="login_dialog_continue", width="stretch"):
+            st.login()
+    else:
+        st.write("Sign in is optional. It becomes available after an OpenID Connect provider is added to the app’s Streamlit secrets.")
+        st.code('[auth]\nredirect_uri = "https://testnasa123.streamlit.app/oauth2callback"\ncookie_secret = "<long random secret>"\nclient_id = "<provider client ID>"\nclient_secret = "<provider client secret>"\nserver_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"', language="toml")
+        st.caption("Add this in Streamlit Cloud → app settings → Secrets. Create the client ID with the matching redirect URL in your identity provider. For local use, change redirect_uri to http://localhost:8501/oauth2callback.")
 
 
 # ============================================================
@@ -2254,6 +2312,11 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+with st.container(key="floating_login"):
+    account_button_label = "👤 Account" if current_user_logged_in() else "👤 Log in"
+    if st.button(account_button_label, key="floating_login_button"):
+        show_login_dialog()
+
 
 # ============================================================
 # SIDEBAR
@@ -2429,6 +2492,17 @@ with st.sidebar:
         index=0,
         help="The percentage options show that share of the first 1,000 rows. All shows every loaded row."
     )
+
+    with st.expander("⚙️ Settings & account", expanded=False):
+        if current_user_logged_in():
+            account_label = getattr(st.user, "name", None) or getattr(st.user, "email", None) or "Signed in"
+            st.caption(f"Signed in as {account_label}")
+            if st.button("Log out", key="settings_logout", width="stretch"):
+                st.logout()
+        else:
+            st.caption("Signing in is optional.")
+            if st.button("Log in", key="settings_login", width="stretch"):
+                show_login_dialog()
 
     st.markdown("---")
 
@@ -3173,10 +3247,6 @@ with tab_atmosphere:
     searched_places = st.session_state.get("air_quality_place_results", [])
 
     aqi_locations = registry.dropna(subset=["lat", "lon"]).copy() if registry is not None and not registry.empty else pd.DataFrame(columns=["region", "lat", "lon"])
-    if country_scope_mode == "Selected countries":
-        aqi_locations = filter_points_to_country_scope(
-            aqi_locations, selected_countries, True, country_boundaries
-        )
     aqi_location_lookup = {}
     for _, location_row in aqi_locations.iterrows():
         country_name = country_labels_for_points(aqi_locations.loc[[location_row.name]], country_boundaries).iloc[0]
@@ -3184,8 +3254,6 @@ with tab_atmosphere:
         aqi_location_lookup[location_label] = (float(location_row["lat"]), float(location_row["lon"]))
     for place in searched_places:
         place_country = place.get("country", "")
-        if country_scope_mode == "Selected countries" and place_country not in selected_countries:
-            continue
         place_label = " · ".join(part for part in [place.get("name", "Place"), place.get("admin1"), place_country] if part)
         if place.get("population"):
             place_label += f" · pop. {int(place['population']):,}"
@@ -3210,7 +3278,7 @@ with tab_atmosphere:
         aqi_lat, aqi_lon = aqi_location_lookup[selected_aqi_location]
 
     with st.expander("📍 Compare and follow places", expanded=False):
-        st.caption("Select up to five places from the local registry or your search results. Selected-country map scope also filters this list.")
+        st.caption("Choose up to five places worldwide. The map’s country filter does not limit AQI search or alerts.")
         place_choices = list(aqi_location_lookup.keys())
         if "air_quality_followed_places" in st.session_state:
             st.session_state["air_quality_followed_places"] = [
@@ -3300,10 +3368,7 @@ with tab_atmosphere:
         with sms_enabled_col:
             st.checkbox("Text alert", key="aqi_alert_sms_enabled")
             st.text_input("Phone number (include country code)", placeholder="+1 555 123 4567", key="aqi_alert_phone")
-        if country_scope_mode == "Selected countries":
-            st.caption("Alerts follow your selected country scope: " + (", ".join(selected_countries) if selected_countries else "no countries selected"))
-        else:
-            st.caption("Alerts follow places worldwide (all countries). Select countries in the dashboard country scope to narrow them.")
+        st.caption("AQI reminders follow the places in your watchlist worldwide. The map’s country filter only affects maps and new-fire alerts.")
         with st.expander("One-time provider setup"):
             st.code('SMTP_HOST = "..."\nSMTP_PORT = 587\nSMTP_USER = "..."\nSMTP_PASSWORD = "..."\nSMTP_FROM = "..."\nTWILIO_ACCOUNT_SID = "..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "..."', language="toml")
             st.caption("Store these values in Streamlit secrets or environment variables. Never paste passwords here.")
