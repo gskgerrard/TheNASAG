@@ -6,11 +6,11 @@ import subprocess
 import time
 import datetime
 import smtplib
+import importlib.util
 from email.message import EmailMessage
 import json
 from pathlib import Path
 from io import StringIO
-import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -1121,6 +1121,7 @@ def load_all_data():
         "archive",
         "backup",
         "historical_hazards",
+        "j1_viirs_c2_global_48h",
     ]
 
     files = [
@@ -2067,15 +2068,23 @@ def fetch_firms_api(map_key, source="VIIRS_SNPP_NRT", day_range=1):
         return None, f"Could not fetch NASA FIRMS data: {type(exc).__name__}."
 
 
-def local_firms_snapshot(raw_data):
-    """Return locally saved NASA VIIRS FIRMS rows as an explicitly dated snapshot."""
-    if raw_data is None or raw_data.empty or "__file__" not in raw_data.columns:
-        return None
-    source_mask = raw_data["__file__"].astype(str).str.contains(
-        r"J1_VIIRS|FIRMS", case=False, regex=True
+@st.cache_data(show_spinner=False, ttl=3600)
+def local_firms_snapshot():
+    """Load the saved FIRMS sample only when the live feed is unavailable."""
+    candidates = sorted(
+        glob.glob(os.path.join(DATA_DIR, "*J1_VIIRS_C2_Global_48h*.csv"))
+        + glob.glob(os.path.join(DATA_DIR, "*FIRMS*.csv"))
     )
-    snapshot = raw_data.loc[source_mask].copy()
-    if snapshot.empty or not {"lat", "lon"}.issubset(snapshot.columns):
+    if not candidates:
+        return None
+    try:
+        snapshot = pd.read_csv(candidates[0])
+    except Exception:
+        return None
+    for old, new in (("latitude", "lat"), ("longitude", "lon"), ("acq_date", "date")):
+        if old in snapshot.columns and new not in snapshot.columns:
+            snapshot = snapshot.rename(columns={old: new})
+    if not {"lat", "lon"}.issubset(snapshot.columns):
         return None
     snapshot["lat"] = pd.to_numeric(snapshot["lat"], errors="coerce")
     snapshot["lon"] = pd.to_numeric(snapshot["lon"], errors="coerce")
@@ -2265,8 +2274,13 @@ with st.sidebar:
 
     if predictor_script:
         st.caption("Uses the bundled VIIRS FIRMS sample; this is not a live forecast.")
-
-        if st.button("▶️ Train & Estimate Sample"):
+        ml_dependencies_available = all(
+            importlib.util.find_spec(package) is not None
+            for package in ("tensorflow", "sklearn", "joblib")
+        )
+        if not ml_dependencies_available:
+            st.caption("Model training is optional and unavailable on this lightweight deployment. Install `requirements-ml.txt` to run it locally.")
+        elif st.button("▶️ Train & Estimate Sample"):
             with st.spinner("Training the VIIRS model and estimating fire intensity..."):
                 result = subprocess.run(
                     [sys.executable, predictor_script],
@@ -2492,7 +2506,7 @@ firms_display_source = (
 )
 
 if firms_df is None:
-    local_firms_df = local_firms_snapshot(raw_data)
+    local_firms_df = local_firms_snapshot()
     if local_firms_df is not None and not local_firms_df.empty:
         firms_df = local_firms_df
         latest_local_observation = firms_df["date"].max() if "date" in firms_df.columns else pd.NaT

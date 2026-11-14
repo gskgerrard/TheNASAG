@@ -1,0 +1,8 @@
+# Optional dependencies for the local VIIRS training and prediction scripts.
+# These are intentionally excluded from requirements.txt so the Streamlit
+# dashboard deploys without the much larger training stack.
+-r requirements.txt
+matplotlib
+scikit-learn
+joblib
+tensorflow
