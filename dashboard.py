@@ -305,8 +305,8 @@ def selected_country_focus_bounds(country_names, boundaries):
                     east += 360
                 shift = round(((west + east) / 2) / 360) * 360
                 min_lon, max_lon = west - shift, east - shift
-    lon_padding = max(1.0, (max_lon - min_lon) * 0.12)
-    lat_padding = max(1.0, (max_lat - min_lat) * 0.12)
+    lon_padding = max(0.25, (max_lon - min_lon) * 0.05)
+    lat_padding = max(0.25, (max_lat - min_lat) * 0.05)
     return [min_lon - lon_padding, min_lat - lat_padding, max_lon + lon_padding, max_lat + lat_padding]
 
 
@@ -736,7 +736,7 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600, foc
         geo=dict(
             projection=dict(
                 type=projection,
-                scale=(min(60.0, max(1.0, 360.0 / max(focus_bounds[2] - focus_bounds[0], (focus_bounds[3] - focus_bounds[1]) * 1.5, 5.0))) if focus_bounds else 1),
+                scale=(min(100.0, max(1.0, 420.0 / max(focus_bounds[2] - focus_bounds[0], (focus_bounds[3] - focus_bounds[1]) * 1.5, 4.0))) if focus_bounds else 1),
             ),
             center=(
                 dict(lat=(focus_bounds[1] + focus_bounds[3]) / 2, lon=(focus_bounds[0] + focus_bounds[2]) / 2)
@@ -785,7 +785,7 @@ def make_geo_fig(fig, focus_bounds=None):
         fig.update_geos(
             fitbounds=False,
             scope="world",
-            projection_scale=min(60.0, max(1.0, 360.0 / span)),
+            projection_scale=min(100.0, max(1.0, 420.0 / span)),
             center=dict(lon=(min_lon + max_lon) / 2, lat=(min_lat + max_lat) / 2),
         )
     else:
@@ -827,7 +827,7 @@ const nasaLayer = "__LAYER__";
 const nasaDate = "__DATE__";
 const focusBounds = __FOCUS_BOUNDS__;
 const map = L.map('map', {zoomControl:false, tap:true, scrollWheelZoom:false});
-if(focusBounds) map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]], {padding:[24,24],maxZoom:8});
+if(focusBounds) map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]], {padding:[8,8],maxZoom:10});
 else map.setView([18, 0], 2);
 L.control.zoom({position:'topright'}).addTo(map);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -953,7 +953,7 @@ html,body,#map{{height:100%;width:100%;margin:0;background:#071426}}.leaflet-con
 const rows={payload}; const thermalCells={surface_payload}; const thermalRadiusMeters={surface_radius_meters};
 const focusBounds={json.dumps(focus_bounds)};
 const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true}});
-if(focusBounds)map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]],{{padding:[24,24],maxZoom:8}});else map.setView([18,0],2);
+if(focusBounds)map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]],{{padding:[8,8],maxZoom:10}});else map.setView([18,0],2);
 L.control.zoom({{position:'topright'}}).addTo(map);
  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,noWrap:true,bounds:[[-85,-180],[85,180]],attribution:'&copy; OpenStreetMap contributors'}}).addTo(map);
 if(thermalCells.length){{
