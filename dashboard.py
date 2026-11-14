@@ -2261,6 +2261,13 @@ with st.sidebar:
             )
         else:
             st.warning("Country boundaries could not be loaded, so country-specific alerts are unavailable.")
+    map_scope_signature = (country_scope_mode, tuple(selected_countries))
+    if country_scope_mode == "Selected countries" and st.session_state.get("_last_map_scope_signature") != map_scope_signature:
+        # Keep a one-country view visually consistent with the all-country
+        # FIRMS thermal layer when its geographic scope changes.
+        st.session_state["global_map_view"] = "Thermal vision"
+        st.session_state["firms_map_view"] = "Thermal vision"
+    st.session_state["_last_map_scope_signature"] = map_scope_signature
     st.caption("Selected countries filter point maps and new-fire alerts. Satellite imagery stays global but zooms to your selection. FIRMS detections are unconfirmed; country matching uses generalized boundaries.")
     country_focus_bounds = (
         selected_country_focus_bounds(selected_countries, country_boundaries)
