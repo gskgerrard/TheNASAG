@@ -263,7 +263,8 @@ def fire_detection_ids(data_frame):
     identity_columns = [column for column in ("date", "acq_time", "satellite", "instrument", "lat", "lon") if column in data_frame.columns]
     if not identity_columns:
         identity_columns = [column for column in ("lat", "lon", "frp", "brightness") if column in data_frame.columns]
-    return data_frame[identity_columns].fillna("").astype(str).agg("|".join, axis=1)
+    identity_frame = data_frame[identity_columns].astype("string").fillna("")
+    return pd.util.hash_pandas_object(identity_frame, index=False)
 
 
 # ============================================================
@@ -2246,13 +2247,6 @@ if live_events is not None and not live_events.empty and not show_all_geometry:
         .tail(1)
     )
 
-live_load_status.update(
-    label="NASA feed check complete",
-    state="complete",
-    expanded=False,
-)
-
-
 # ============================================================
 # NEW FIRE DETECTION POPUPS
 # ============================================================
@@ -2284,6 +2278,12 @@ if firms_is_live and firms_df is not None:
     # Keep a rolling baseline per satellite feed so detections do not alert again
     # on every automatic refresh. The limit bounds session memory on busy feeds.
     seen_by_feed[feed_key] = list((previous_ids | current_ids))[-50000:]
+
+live_load_status.update(
+    label="NASA feed check complete",
+    state="complete",
+    expanded=False,
+)
 
 
 # ============================================================
