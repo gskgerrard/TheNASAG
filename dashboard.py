@@ -5,6 +5,7 @@ import sys
 import subprocess
 import time
 import datetime
+import json
 from pathlib import Path
 from io import StringIO
 import joblib
@@ -47,6 +48,9 @@ ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = str(ROOT_DIR / "data")
 OUTPUT_DIR = str(ROOT_DIR / "output")
 COORD_PATH = str(ROOT_DIR / "data" / "coordinates.csv")
+# Natural Earth 1:110m Admin-0 country polygons (public domain):
+# https://www.naturalearthdata.com/downloads/110m-cultural-vectors/
+COUNTRY_BOUNDARIES_PATH = ROOT_DIR / "data" / "countries.geojson"
 
 PREDICTOR_SCRIPT_CANDIDATES = [
     "pipeline.py",
@@ -181,6 +185,85 @@ HAZARD_COLORS = {
     "Ice": "#67e8f9",
     "Other": "#22c55e",
 }
+
+
+@st.cache_data(show_spinner=False)
+def load_country_boundaries():
+    """Load bundled Natural Earth country polygons for local point matching."""
+    try:
+        with COUNTRY_BOUNDARIES_PATH.open("r", encoding="utf-8") as boundary_file:
+            geojson = json.load(boundary_file)
+        return [
+            {
+                "name": feature.get("properties", {}).get("ADMIN"),
+                "bbox": feature.get("bbox"),
+                "geometry": feature.get("geometry", {}),
+            }
+            for feature in geojson.get("features", [])
+            if feature.get("properties", {}).get("ADMIN") and feature.get("geometry")
+        ]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def points_in_ring(longitudes, latitudes, ring):
+    """Vectorized ray-casting test for points in a polygon ring."""
+    coordinates = np.asarray(ring, dtype=float)
+    inside = np.zeros(len(longitudes), dtype=bool)
+    if len(coordinates) < 3:
+        return inside
+    x1, y1 = coordinates[:-1, 0], coordinates[:-1, 1]
+    x2, y2 = coordinates[1:, 0], coordinates[1:, 1]
+    for edge in range(len(x1)):
+        crosses = (y1[edge] > latitudes) != (y2[edge] > latitudes)
+        if y1[edge] != y2[edge]:
+            crossing_lon = (x2[edge] - x1[edge]) * (latitudes - y1[edge]) / (y2[edge] - y1[edge]) + x1[edge]
+            inside ^= crosses & (longitudes < crossing_lon)
+    return inside
+
+
+def mask_points_in_country(data_frame, country_name, boundaries):
+    """Match FIRMS coordinates to a selected Natural Earth country polygon."""
+    feature = next((item for item in boundaries if item["name"] == country_name), None)
+    if data_frame is None:
+        return pd.Series(dtype=bool)
+    if feature is None or data_frame.empty:
+        return pd.Series(False, index=data_frame.index)
+
+    longitudes = pd.to_numeric(data_frame["lon"], errors="coerce").to_numpy(dtype=float)
+    latitudes = pd.to_numeric(data_frame["lat"], errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(longitudes) & np.isfinite(latitudes)
+    bbox = feature.get("bbox")
+    if bbox and len(bbox) >= 4:
+        min_lon, min_lat, max_lon, max_lat = bbox[:4]
+        valid &= (longitudes >= min_lon) & (longitudes <= max_lon)
+        valid &= (latitudes >= min_lat) & (latitudes <= max_lat)
+
+    result = np.zeros(len(data_frame), dtype=bool)
+    candidate_indices = np.flatnonzero(valid)
+    if candidate_indices.size:
+        candidate_lon = longitudes[candidate_indices]
+        candidate_lat = latitudes[candidate_indices]
+        geometry = feature["geometry"]
+        polygons = [geometry.get("coordinates", [])] if geometry.get("type") == "Polygon" else geometry.get("coordinates", [])
+        for polygon in polygons:
+            if not polygon:
+                continue
+            in_polygon = points_in_ring(candidate_lon, candidate_lat, polygon[0])
+            for hole in polygon[1:]:
+                in_polygon &= ~points_in_ring(candidate_lon, candidate_lat, hole)
+            result[candidate_indices] |= in_polygon
+    return pd.Series(result, index=data_frame.index)
+
+
+def fire_detection_ids(data_frame):
+    """Create stable IDs so repeated refreshes do not repeat old alerts."""
+    if data_frame is None or data_frame.empty:
+        return pd.Series(dtype=str)
+    identity_columns = [column for column in ("date", "acq_time", "satellite", "instrument", "lat", "lon") if column in data_frame.columns]
+    if not identity_columns:
+        identity_columns = [column for column in ("lat", "lon", "frp", "brightness") if column in data_frame.columns]
+    return data_frame[identity_columns].fillna("").astype(str).agg("|".join, axis=1)
 
 
 # ============================================================
@@ -2016,6 +2099,33 @@ with st.sidebar:
         value=False,
         help="Off by default to reduce likely false alarms. Nominal detections are still algorithm detections, not confirmed ground reports."
     )
+
+    st.markdown("### New Fire Popups")
+    fire_alerts_enabled = st.checkbox(
+        "Show popups for new fire detections",
+        value=True,
+        help="A popup appears when a live FIRMS refresh includes detections not seen in the previous refresh. The first live load sets the baseline."
+    )
+    fire_alert_scope = st.radio(
+        "Alert for",
+        ["All countries", "Specific country"],
+        horizontal=True,
+        key="fire_alert_scope",
+    )
+    country_boundaries = load_country_boundaries()
+    available_countries = sorted({item["name"] for item in country_boundaries})
+    fire_alert_country = None
+    if fire_alert_scope == "Specific country":
+        if available_countries:
+            fire_alert_country = st.selectbox(
+                "Country",
+                available_countries,
+                key="fire_alert_country",
+            )
+        else:
+            st.warning("Country boundaries could not be loaded, so country-specific alerts are unavailable.")
+    st.caption("NASA FIRMS reports satellite detections, which can be unconfirmed. Country matching uses generalized map boundaries.")
+
     firms_url = st.text_input(
         "Optional FIRMS CSV URL override",
         value="",
@@ -2134,6 +2244,39 @@ if live_events is not None and not live_events.empty and not show_all_geometry:
         .groupby("event_id", as_index=False)
         .tail(1)
     )
+
+
+# ============================================================
+# NEW FIRE DETECTION POPUPS
+# ============================================================
+
+if firms_is_live and firms_df is not None:
+    alert_ids = fire_detection_ids(firms_df)
+    feed_key = str(firms_source_used)
+    seen_by_feed = st.session_state.setdefault("seen_firms_alert_ids", {})
+    previous_ids = set(seen_by_feed.get(feed_key, []))
+    current_ids = set(alert_ids.tolist())
+    is_first_live_snapshot = feed_key not in seen_by_feed
+
+    if fire_alerts_enabled and not is_first_live_snapshot and not alert_ids.empty:
+        newly_seen = ~alert_ids.isin(previous_ids)
+        new_detections = firms_df.loc[newly_seen].copy()
+        if fire_alert_scope == "Specific country" and fire_alert_country and not new_detections.empty:
+            country_mask = mask_points_in_country(new_detections, fire_alert_country, country_boundaries)
+            new_detections = new_detections.loc[country_mask]
+
+        if not new_detections.empty:
+            latest = new_detections.iloc[0]
+            location = f"{float(latest['lat']):.2f}, {float(latest['lon']):.2f}"
+            scope_label = fire_alert_country if fire_alert_country else "all countries"
+            st.toast(
+                f"🔥 {len(new_detections):,} new fire detection(s) in {scope_label}. Latest location: {location}.",
+                icon="🔥",
+            )
+
+    # Keep a rolling baseline per satellite feed so detections do not alert again
+    # on every automatic refresh. The limit bounds session memory on busy feeds.
+    seen_by_feed[feed_key] = list((previous_ids | current_ids))[-50000:]
 
 
 # ============================================================
