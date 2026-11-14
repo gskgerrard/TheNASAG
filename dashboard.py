@@ -256,6 +256,61 @@ def mask_points_in_country(data_frame, country_name, boundaries):
     return pd.Series(result, index=data_frame.index)
 
 
+def filter_points_to_country_scope(data_frame, country_names, specific_scope, boundaries):
+    """Keep only point records inside one of the chosen countries when scoped."""
+    if data_frame is None:
+        return data_frame
+    if not specific_scope:
+        return data_frame.copy()
+    if data_frame.empty or not country_names:
+        return data_frame.iloc[0:0].copy()
+    matches = pd.Series(False, index=data_frame.index)
+    for country_name in country_names:
+        matches |= mask_points_in_country(data_frame, country_name, boundaries)
+    return data_frame.loc[matches].copy()
+
+
+def country_labels_for_points(data_frame, boundaries):
+    """Return a readable country/place label for each coordinate pair."""
+    if data_frame is None:
+        return pd.Series(dtype=str)
+    labels = pd.Series("Unknown area", index=data_frame.index, dtype="object")
+    if data_frame.empty or not {"lat", "lon"}.issubset(data_frame.columns):
+        return labels
+
+    longitudes = pd.to_numeric(data_frame["lon"], errors="coerce").to_numpy(dtype=float)
+    latitudes = pd.to_numeric(data_frame["lat"], errors="coerce").to_numpy(dtype=float)
+    unassigned = np.ones(len(data_frame), dtype=bool)
+    for feature in boundaries:
+        if not unassigned.any():
+            break
+        bbox = feature.get("bbox")
+        if not bbox or len(bbox) < 4:
+            continue
+        min_lon, min_lat, max_lon, max_lat = bbox[:4]
+        candidates = unassigned & np.isfinite(longitudes) & np.isfinite(latitudes)
+        candidates &= (longitudes >= min_lon) & (longitudes <= max_lon)
+        candidates &= (latitudes >= min_lat) & (latitudes <= max_lat)
+        candidate_indices = np.flatnonzero(candidates)
+        if not candidate_indices.size:
+            continue
+
+        geometry = feature["geometry"]
+        polygons = [geometry.get("coordinates", [])] if geometry.get("type") == "Polygon" else geometry.get("coordinates", [])
+        matched = np.zeros(candidate_indices.size, dtype=bool)
+        for polygon in polygons:
+            if not polygon:
+                continue
+            in_polygon = points_in_ring(longitudes[candidate_indices], latitudes[candidate_indices], polygon[0])
+            for hole in polygon[1:]:
+                in_polygon &= ~points_in_ring(longitudes[candidate_indices], latitudes[candidate_indices], hole)
+            matched |= in_polygon
+        matched_indices = candidate_indices[matched]
+        labels.iloc[matched_indices] = feature["name"]
+        unassigned[matched_indices] = False
+    return labels
+
+
 def fire_detection_ids(data_frame):
     """Create stable IDs so repeated refreshes do not repeat old alerts."""
     if data_frame is None or data_frame.empty:
@@ -570,15 +625,19 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
 
     total_detections = len(df)
     df = sample_map_points(df, max_points=2000, rank_by="frp")
+    if globals().get("country_boundaries"):
+        df["place"] = country_labels_for_points(df, country_boundaries)
 
     frp = pd.to_numeric(df.get("frp", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0).clip(lower=0)
     df["__frp"] = frp
 
-    custom_columns = [c for c in ["__frp", "confidence", "date", "acq_date", "acq_time", "satellite", "daynight"] if c in df.columns]
+    custom_columns = [c for c in ["place", "__frp", "confidence", "date", "acq_date", "acq_time", "satellite", "daynight"] if c in df.columns]
     custom_data = df[custom_columns].to_numpy() if custom_columns else None
     hover_lines = ["<b>Thermal hotspot</b>"]
+    if "place" in custom_columns:
+        hover_lines.append(f"Place: %{{customdata[{custom_columns.index('place')}]}}")
     if "__frp" in custom_columns:
-        hover_lines.append("FRP: %{customdata[0]:.1f} MW")
+        hover_lines.append(f"FRP: %{{customdata[{custom_columns.index('__frp')}]:.1f}} MW")
     if "confidence" in custom_columns:
         idx = custom_columns.index("confidence")
         hover_lines.append(f"Confidence: %{{customdata[{idx}]}}")
@@ -758,9 +817,11 @@ def render_leaflet_points(data_frame, *, color_by=None, category_colors=None,
             frame, color_by, pixel_size_meters=pixel_size_meters
         )
     frame = sample_map_points(frame, max_points=point_limit, rank_by=color_by)
+    if globals().get("country_boundaries"):
+        frame["place"] = country_labels_for_points(frame, country_boundaries)
 
     if popup_columns is None:
-        popup_columns = [c for c in ("title", "hazard", "categories", "date", "region", "frp", "confidence", "satellite") if c in frame.columns]
+        popup_columns = [c for c in ("title", "place", "hazard", "categories", "date", "region", "frp", "confidence", "satellite") if c in frame.columns]
     popup_columns = [c for c in popup_columns if c in frame.columns and c not in {"lat", "lon"}]
 
     records = []
@@ -1863,6 +1924,9 @@ def show_eonet_event_browser(events, key="eonet_events"):
         title = str(event.get("title") or "Untitled NASA EONET event")
         with st.expander(f"{title} · {event.get('hazard', 'Other')}"):
             details = [str(event.get("categories") or "Uncategorized")]
+            place = event.get("place")
+            if isinstance(place, str) and place and place != "Unknown area":
+                details.append(place)
             event_date = event.get("date")
             if pd.notna(event_date):
                 details.append(pd.Timestamp(event_date).strftime("%d %b %Y UTC"))
@@ -2109,25 +2173,25 @@ with st.sidebar:
     )
     if st.button("Send test popup", help="Shows a sample notification without contacting NASA or changing your alert baseline."):
         st.toast("🔥 Test popup: fire alerts are working.", icon="🔥")
-    fire_alert_scope = st.radio(
-        "Alert for",
-        ["All countries", "Specific country"],
-        horizontal=True,
-        key="fire_alert_scope",
-    )
     country_boundaries = load_country_boundaries()
     available_countries = sorted({item["name"] for item in country_boundaries})
-    fire_alert_country = None
-    if fire_alert_scope == "Specific country":
+    country_scope_mode = st.radio(
+        "Country scope for maps and alerts",
+        ["All countries", "Selected countries"],
+        horizontal=True,
+        key="country_scope_mode",
+    )
+    selected_countries = []
+    if country_scope_mode == "Selected countries":
         if available_countries:
-            fire_alert_country = st.selectbox(
-                "Country",
+            selected_countries = st.multiselect(
+                "Choose one or more countries",
                 available_countries,
-                key="fire_alert_country",
+                key="fire_alert_countries",
             )
         else:
             st.warning("Country boundaries could not be loaded, so country-specific alerts are unavailable.")
-    st.caption("NASA FIRMS reports satellite detections, which can be unconfirmed. Country matching uses generalized map boundaries.")
+    st.caption("Selected countries filter point maps and new-fire alerts. Satellite imagery remains global. FIRMS detections are unconfirmed; country matching uses generalized boundaries.")
 
     firms_url = st.text_input(
         "Optional FIRMS CSV URL override",
@@ -2248,6 +2312,8 @@ if live_events is not None and not live_events.empty and not show_all_geometry:
         .groupby("event_id", as_index=False)
         .tail(1)
     )
+if live_events is not None and not live_events.empty and {"lat", "lon"}.issubset(live_events.columns):
+    live_events["place"] = country_labels_for_points(live_events, country_boundaries)
 
 # ============================================================
 # NEW FIRE DETECTION POPUPS
@@ -2264,14 +2330,19 @@ if firms_is_live and firms_df is not None:
     if fire_alerts_enabled and not is_first_live_snapshot and not alert_ids.empty:
         newly_seen = ~alert_ids.isin(previous_ids)
         new_detections = firms_df.loc[newly_seen].copy()
-        if fire_alert_scope == "Specific country" and fire_alert_country and not new_detections.empty:
-            country_mask = mask_points_in_country(new_detections, fire_alert_country, country_boundaries)
-            new_detections = new_detections.loc[country_mask]
+        country_scope_active = country_scope_mode == "Selected countries"
+        if country_scope_active:
+            new_detections = filter_points_to_country_scope(
+                new_detections, selected_countries, True, country_boundaries
+            )
 
         if not new_detections.empty:
             latest = new_detections.iloc[0]
-            location = f"{float(latest['lat']):.2f}, {float(latest['lon']):.2f}"
-            scope_label = fire_alert_country if fire_alert_country else "all countries"
+            latest_frame = new_detections.iloc[[0]]
+            place = country_labels_for_points(latest_frame, country_boundaries).iloc[0]
+            coordinates = f"{float(latest['lat']):.2f}, {float(latest['lon']):.2f}"
+            location = f"{place} ({coordinates})"
+            scope_label = ", ".join(selected_countries) if country_scope_active else "all countries"
             st.toast(
                 f"🔥 {len(new_detections):,} new fire detection(s) in {scope_label}. Latest location: {location}.",
                 icon="🔥",
@@ -2318,7 +2389,7 @@ if live_events is not None and not live_events.empty:
     live_fire_count = int((live_events["hazard"] == "Fire").sum())
     live_flood_count = int((live_events["hazard"] == "Flood").sum())
 
-d1, d2, d3, d4 = st.columns(4)
+d1, d2, d3 = st.columns(3)
 
 with d1:
     st.metric("🛰️ Live Events", live_count)
@@ -2328,9 +2399,6 @@ with d2:
 
 with d3:
     st.metric("🌊 Live Flood Events", live_flood_count)
-
-with d4:
-    st.metric("🕒 Last checked", datetime.datetime.now().strftime("%H:%M:%S"))
 
 
 # ============================================================
@@ -2452,9 +2520,13 @@ with tab_global_map:
             )
 
             map_df = live_events[live_events["hazard"].isin(selected_hazards)].copy()
+            map_df = filter_points_to_country_scope(
+                map_df, selected_countries,
+                country_scope_mode == "Selected countries", country_boundaries,
+            )
 
             if map_df.empty:
-                st.info("No hazards selected.")
+                st.info("No events match the selected hazards and countries. Choose at least one country or switch to all countries.")
 
             else:
                 mapped_events = map_df.dropna(subset=["lat", "lon"])
@@ -2465,7 +2537,7 @@ with tab_global_map:
                 if not mapped_events.empty:
                     if map_view != "Globe / flat map":
                         render_leaflet_points(mapped_events, color_by="hazard", category_colors=HAZARD_COLORS,
-                                              popup_columns=["title", "hazard", "categories", "date"], height=460,
+                                              popup_columns=["title", "place", "hazard", "categories", "date"], height=460,
                                               thermal=map_view == "Thermal vision",
                                               key="map_eonet_global_leaflet")
                     else:
@@ -2475,7 +2547,7 @@ with tab_global_map:
                             lon="lon",
                             color="hazard",
                             hover_name="title",
-                            hover_data=["categories", "date"],
+                            hover_data=[c for c in ["place", "categories", "date"] if c in mapped_events.columns],
                             color_discrete_map=HAZARD_COLORS,
                             projection=projection,
                             height=460,
@@ -2495,30 +2567,37 @@ with tab_global_map:
         if firms_df is None:
             st.info(firms_error)
         else:
+            firms_map_df = filter_points_to_country_scope(
+                firms_df, selected_countries,
+                country_scope_mode == "Selected countries", country_boundaries,
+            )
             if not firms_is_live:
                 st.warning(firms_error)
-            if map_view != "Globe / flat map":
-                if map_view == "Thermal vision":
-                    render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
-                                          thermal=True,
-                                          pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
-                                          key="map_firms_global_thermal_leaflet")
+            if firms_map_df.empty:
+                st.info("No fire detections are in the selected countries.")
+            else:
+                if map_view != "Globe / flat map":
+                    if map_view == "Thermal vision":
+                        render_leaflet_points(firms_map_df, color_by="frp", height=460, point_limit=2000,
+                                              thermal=True,
+                                              pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
+                                              key="map_firms_global_thermal_leaflet")
+                    else:
+                        render_leaflet_points(firms_map_df, color_by="frp", height=460, point_limit=2000,
+                                              pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
+                                              key="map_firms_global_leaflet")
                 else:
-                    render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
-                                          pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
-                                          key="map_firms_global_leaflet")
-            else:
-                fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
-                st.plotly_chart(
-                    fig,
-                    width="stretch",
-                    config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
-                    key="map_firms_global",
-                )
-            if map_view == "Thermal vision":
-                st.caption(f"Data source: {firms_display_source}. Thermal vision colors supported clusters of NASA FIRMS fire detections by relative satellite fire radiative power (FRP), not ground temperature or fire perimeters. Empty areas have no plotted detections; isolated detections remain visible on the standard map.")
-            else:
-                st.caption(f"Data source: {firms_display_source}. NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
+                    fig = make_thermal_fire_map(firms_map_df, projection=projection, height=460)
+                    st.plotly_chart(
+                        fig,
+                        width="stretch",
+                        config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
+                        key="map_firms_global",
+                    )
+                if map_view == "Thermal vision":
+                    st.caption(f"Data source: {firms_display_source}. Thermal vision colors supported clusters of NASA FIRMS fire detections by relative satellite fire radiative power (FRP), not ground temperature or fire perimeters. Empty areas have no plotted detections; isolated detections remain visible on the standard map.")
+                else:
+                    st.caption(f"Data source: {firms_display_source}. NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
             with st.expander("View fire detection records"):
                 st.dataframe(firms_df.head(1000), width="stretch")
@@ -2535,6 +2614,12 @@ with tab_global_map:
             st.warning("No local coordinate data available.")
 
         else:
+            base_map = filter_points_to_country_scope(
+                base_map, selected_countries,
+                country_scope_mode == "Selected countries", country_boundaries,
+            )
+            if base_map.empty:
+                st.info("No local points are in the selected countries.")
             color = None
             size = None
             color_scale = "Viridis"
@@ -2785,6 +2870,12 @@ with tab_local_hazards:
 
             if point_summary is not None and col in point_summary.columns:
                 top_points = point_summary.sort_values(col, ascending=False).head(100)
+                top_points = filter_points_to_country_scope(
+                    top_points, selected_countries,
+                    country_scope_mode == "Selected countries", country_boundaries,
+                )
+                if top_points.empty:
+                    st.info("No locations for this signal are in the selected countries.")
                 st.caption(f"Showing the strongest {len(top_points):,} mapped locations for this signal.")
                 with st.expander("Browse location records"):
                     st.dataframe(top_points, width="stretch")
@@ -2931,7 +3022,11 @@ with tab_live_events:
         st.info("No live events found.")
 
     else:
-        mapped_events = live_events.dropna(subset=["lat", "lon"])
+        scoped_events = filter_points_to_country_scope(
+            live_events, selected_countries,
+            country_scope_mode == "Selected countries", country_boundaries,
+        )
+        mapped_events = scoped_events.dropna(subset=["lat", "lon"])
         if not mapped_events.empty:
             map_view = st.radio(
                 "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
@@ -2939,7 +3034,7 @@ with tab_live_events:
             )
             if map_view != "Globe / flat map":
                 render_leaflet_points(mapped_events, color_by="hazard", category_colors=HAZARD_COLORS,
-                                      popup_columns=["title", "hazard", "categories", "date"], height=460,
+                                      popup_columns=["title", "place", "hazard", "categories", "date"], height=460,
                                       thermal=map_view == "Thermal vision",
                                       key="map_eonet_live_events_leaflet")
             else:
@@ -2951,7 +3046,7 @@ with tab_live_events:
                     lon="lon",
                     color="hazard",
                     hover_name="title",
-                    hover_data=[c for c in ["categories", "date"] if c in mapped_events.columns],
+                    hover_data=[c for c in ["place", "categories", "date"] if c in mapped_events.columns],
                     color_discrete_map=HAZARD_COLORS,
                     projection=projection,
                     height=420,
@@ -2964,8 +3059,8 @@ with tab_live_events:
                     key="map_eonet_live_events",
                 )
         else:
-            st.info("These event records do not currently include coordinates for a map.")
-        show_eonet_event_browser(live_events, key="live_events_browser")
+            st.info("No event locations are available in the selected countries.")
+        show_eonet_event_browser(scoped_events, key="live_events_browser")
 
 
 # ============================================================
@@ -2980,6 +3075,10 @@ with tab_live_fire:
     if firms_df is None:
         st.info(firms_error)
     else:
+        firms_map_df = filter_points_to_country_scope(
+            firms_df, selected_countries,
+            country_scope_mode == "Selected countries", country_boundaries,
+        )
         if firms_is_live:
             st.success(f"Loaded {len(firms_df):,} live fire detections from NASA FIRMS ({firms_source_used}).")
             if firms_error:
@@ -2989,6 +3088,8 @@ with tab_live_fire:
         else:
             st.warning(firms_error)
             st.caption(f"Showing {len(firms_df):,} saved detections; this snapshot is not live.")
+        if firms_map_df.empty:
+            st.info("No fire detections are in the selected countries.")
 
         map_view = st.radio(
             "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
@@ -2996,18 +3097,18 @@ with tab_live_fire:
         )
         if map_view != "Globe / flat map":
             if map_view == "Thermal vision":
-                render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
+                render_leaflet_points(firms_map_df, color_by="frp", height=460, point_limit=2000,
                                       thermal=True,
                                       pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
                                       key="map_firms_live_thermal_leaflet")
             else:
-                render_leaflet_points(firms_df, color_by="frp", height=460, point_limit=2000,
+                render_leaflet_points(firms_map_df, color_by="frp", height=460, point_limit=2000,
                                       pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
                                       key="map_firms_live_leaflet")
         else:
             map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="firms_map_style")
             projection = "orthographic" if map_style == "Globe" else "natural earth"
-            fig = make_thermal_fire_map(firms_df, projection=projection, height=460)
+            fig = make_thermal_fire_map(firms_map_df, projection=projection, height=460)
             st.plotly_chart(
                 fig,
                 width="stretch",
