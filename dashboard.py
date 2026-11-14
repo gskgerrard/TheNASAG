@@ -493,7 +493,7 @@ label *,
 .st-key-floating_login {
     position: fixed !important;
     right: 1.25rem !important;
-    bottom: 1.25rem !important;
+    bottom: 4.5rem !important;
     z-index: 9999 !important;
     width: max-content !important;
     max-width: calc(100vw - 2rem) !important;
@@ -528,7 +528,7 @@ label *,
     }
     .st-key-floating_login {
         right: 0.65rem !important;
-        bottom: 0.65rem !important;
+        bottom: 4.25rem !important;
     }
     [data-testid="stPlotlyChart"] {
         width: 100% !important;
