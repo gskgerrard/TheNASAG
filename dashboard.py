@@ -2107,6 +2107,8 @@ with st.sidebar:
         value=True,
         help="A popup appears when a live FIRMS refresh includes detections not seen in the previous refresh. The first live load sets the baseline."
     )
+    if st.button("Send test popup", help="Shows a sample notification without contacting NASA or changing your alert baseline."):
+        st.toast("🔥 Test popup: fire alerts are working.", icon="🔥")
     fire_alert_scope = st.radio(
         "Alert for",
         ["All countries", "Specific country"],
