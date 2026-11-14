@@ -2140,8 +2140,6 @@ if live_events is not None and not live_events.empty and not show_all_geometry:
 # METRICS
 # ============================================================
 
-c1, c2, c3, c4, c5 = st.columns(5)
-
 files_loaded = 0 if file_summary.empty else len(file_summary)
 
 if raw_data is not None:
@@ -2168,23 +2166,7 @@ if live_events is not None and not live_events.empty:
     live_fire_count = int((live_events["hazard"] == "Fire").sum())
     live_flood_count = int((live_events["hazard"] == "Flood").sum())
 
-with c1:
-    st.metric("📁 Local Files", files_loaded)
-
-with c2:
-    st.metric("📊 Local Rows", total_rows)
-
-with c3:
-    st.metric("🌍 Regions", total_regions)
-
-with c4:
-    st.metric("📍 Points", total_points)
-
-with c5:
-    st.metric("🔥 Max Estimated Fire Score", f"{max_risk:.2f}")
-
-
-d1, d2, d3, d4, d5 = st.columns(5)
+d1, d2, d3, d4 = st.columns(4)
 
 with d1:
     st.metric("🛰️ Live Events", live_count)
@@ -2196,26 +2178,23 @@ with d3:
     st.metric("🌊 Live Flood Events", live_flood_count)
 
 with d4:
-    st.metric("🚨 Local Emergency Labels", emergency_labels)
-
-with d5:
-    st.metric("🕒 Checked", datetime.datetime.now().strftime("%H:%M:%S"))
+    st.metric("🕒 Last checked", datetime.datetime.now().strftime("%H:%M:%S"))
 
 
 # ============================================================
 # TABS
 # ============================================================
 
-tab_command, tab_tables, tab_global_map, tab_prediction, tab_local_hazards, tab_atmosphere, tab_live_events, tab_live_fire, tab_coordinates, tab_sources = st.tabs(
+tab_global_map, tab_live_events, tab_live_fire, tab_local_hazards, tab_atmosphere, tab_prediction, tab_command, tab_tables, tab_coordinates, tab_sources = st.tabs(
     [
-        "🌍 Mission Control",
-        "📋 Data Tables",
-        "🌐 Global Map",
-        "🔮 Prediction",
-        "🛰️ Local Hazards",
-        "🌫️ Air & Atmosphere",
+        "🌍 Overview Map",
         "🚨 Live Events",
         "🔥 Live Fire",
+        "🛰️ Local Hazards",
+        "🌫️ Air & Atmosphere",
+        "🔮 Prediction",
+        "📁 Local Data",
+        "📋 Data Tables",
         "🧭 Coordinates",
         "📚 Sources",
     ]
@@ -2227,7 +2206,15 @@ tab_command, tab_tables, tab_global_map, tab_prediction, tab_local_hazards, tab_
 # ============================================================
 
 with tab_command:
-    st.markdown("## 🌍 Mission Control")
+    st.markdown("## 📁 Local Data")
+    st.caption("A quick summary of the files and regions loaded from your project.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Local files", files_loaded)
+    m2.metric("Rows", total_rows)
+    m3.metric("Regions", total_regions)
+    m4.metric("Mapped points", total_points)
+    st.metric("Highest estimated fire score", f"{max_risk:.2f}")
+    st.caption(f"Local emergency labels: {emergency_labels:,}")
 
     st.markdown("### Local Input Files")
 
@@ -2259,7 +2246,8 @@ with tab_command:
 # ============================================================
 
 with tab_global_map:
-    st.markdown("## 🌐 Global Map")
+    st.markdown("## 🌍 Earth activity at a glance")
+    st.caption("Start with the map. Choose a layer to explore NASA event reports, satellite fire detections, or local environmental signals.")
 
     layer_options = [
         "Live EONET Events",
@@ -2377,7 +2365,8 @@ with tab_global_map:
             else:
                 st.caption(f"Data source: {firms_display_source}. NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
-            st.dataframe(firms_df.head(1000), width="stretch")
+            with st.expander("View fire detection records"):
+                st.dataframe(firms_df.head(1000), width="stretch")
 
     else:
         base_map = None
