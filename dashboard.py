@@ -270,6 +270,46 @@ def filter_points_to_country_scope(data_frame, country_names, specific_scope, bo
     return data_frame.loc[matches].copy()
 
 
+def selected_country_focus_bounds(country_names, boundaries):
+    """Return padded Leaflet bounds for the selected countries, if any."""
+    features = [feature for feature in boundaries if feature["name"] in country_names]
+    bboxes = [feature.get("bbox") for feature in features if feature.get("bbox") and len(feature["bbox"]) >= 4]
+    if not bboxes:
+        return None
+    min_lon = min(bbox[0] for bbox in bboxes)
+    min_lat = min(bbox[1] for bbox in bboxes)
+    max_lon = max(bbox[2] for bbox in bboxes)
+    max_lat = max(bbox[3] for bbox in bboxes)
+    if max_lon - min_lon > 300:
+        longitudes = []
+
+        def collect_longitudes(value):
+            if not isinstance(value, list) or not value:
+                return
+            if len(value) >= 2 and isinstance(value[0], (int, float)):
+                longitudes.append(float(value[0]))
+                return
+            for child in value:
+                collect_longitudes(child)
+
+        for feature in features:
+            collect_longitudes(feature["geometry"].get("coordinates", []))
+        if longitudes:
+            normalized = sorted({longitude % 360 for longitude in longitudes})
+            if len(normalized) > 1:
+                circular = normalized + [normalized[0] + 360]
+                gap_index = max(range(len(normalized)), key=lambda index: circular[index + 1] - circular[index])
+                west = circular[gap_index + 1] % 360
+                east = circular[gap_index]
+                if east < west:
+                    east += 360
+                shift = round(((west + east) / 2) / 360) * 360
+                min_lon, max_lon = west - shift, east - shift
+    lon_padding = max(1.0, (max_lon - min_lon) * 0.12)
+    lat_padding = max(1.0, (max_lat - min_lat) * 0.12)
+    return [min_lon - lon_padding, min_lat - lat_padding, max_lon + lon_padding, max_lat + lat_padding]
+
+
 def country_labels_for_points(data_frame, boundaries):
     """Return a readable country/place label for each coordinate pair."""
     if data_frame is None:
@@ -613,8 +653,10 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
     return records, max(pixel_size_meters / 2, step_degrees * 111_195 * 0.72), basis
 
 
-def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
+def make_thermal_fire_map(data_frame, projection="orthographic", height=600, focus_bounds=None):
     """Render FIRMS detections as a light, single-layer map of normal markers."""
+    if focus_bounds is None:
+        focus_bounds = globals().get("country_focus_bounds")
     df = data_frame.copy()
     df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
     df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
@@ -692,8 +734,14 @@ def make_thermal_fire_map(data_frame, projection="orthographic", height=600):
         font=dict(color="#e9f2ff"),
         margin=dict(l=8, r=8, t=12, b=8),
         geo=dict(
-            projection=dict(type=projection, scale=1),
-            center=dict(lat=10, lon=0),
+            projection=dict(
+                type=projection,
+                scale=(min(60.0, max(1.0, 360.0 / max(focus_bounds[2] - focus_bounds[0], (focus_bounds[3] - focus_bounds[1]) * 1.5, 5.0))) if focus_bounds else 1),
+            ),
+            center=(
+                dict(lat=(focus_bounds[1] + focus_bounds[3]) / 2, lon=(focus_bounds[0] + focus_bounds[2]) / 2)
+                if focus_bounds else dict(lat=10, lon=0)
+            ),
             showland=True,
             landcolor="#151a22",
             showocean=True,
@@ -725,11 +773,23 @@ def make_dark_fig(fig):
     return fig
 
 
-def make_geo_fig(fig):
+def make_geo_fig(fig, focus_bounds=None):
     # Keep global hazard layers framed on the whole Earth. Plotly otherwise
     # auto-fits the view to the current event coordinates, which can make a
     # global EONET feed look like only a small part of the planet is covered.
-    fig.update_geos(fitbounds=False, scope="world", projection_scale=1)
+    if focus_bounds is None:
+        focus_bounds = globals().get("country_focus_bounds")
+    if focus_bounds:
+        min_lon, min_lat, max_lon, max_lat = focus_bounds
+        span = max(max_lon - min_lon, (max_lat - min_lat) * 1.5, 5.0)
+        fig.update_geos(
+            fitbounds=False,
+            scope="world",
+            projection_scale=min(60.0, max(1.0, 360.0 / span)),
+            center=dict(lon=(min_lon + max_lon) / 2, lat=(min_lat + max_lat) / 2),
+        )
+    else:
+        fig.update_geos(fitbounds=False, scope="world", projection_scale=1)
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -748,8 +808,10 @@ def make_geo_fig(fig):
     return fig
 
 
-def render_nasa_atmosphere_map(layer_id, observation_date, height=590):
+def render_nasa_atmosphere_map(layer_id, observation_date, height=590, focus_bounds=None):
     """Show a date-selectable NASA GIBS atmosphere layer inside the dashboard."""
+    if focus_bounds is None:
+        focus_bounds = globals().get("country_focus_bounds")
     html = """<!doctype html>
 <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -763,7 +825,10 @@ html,body,#map{height:100%;width:100%;margin:0;background:#071426}
 <script>
 const nasaLayer = "__LAYER__";
 const nasaDate = "__DATE__";
-const map = L.map('map', {zoomControl:false, tap:true, scrollWheelZoom:false}).setView([18, 0], 2);
+const focusBounds = __FOCUS_BOUNDS__;
+const map = L.map('map', {zoomControl:false, tap:true, scrollWheelZoom:false});
+if(focusBounds) map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]], {padding:[24,24],maxZoom:8});
+else map.setView([18, 0], 2);
 L.control.zoom({position:'topright'}).addTo(map);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 18, attribution: '&copy; OpenStreetMap contributors'
@@ -789,14 +854,16 @@ nasa.on('tileerror', () => { errors += 1; if (!loaded && errors >= 4) status.tex
 setTimeout(() => { if (!loaded && errors === 0) status.textContent = 'Waiting for NASA GIBS imagery…'; }, 8000);
 const resizeGibsMap=()=>map.invalidateSize({pan:false});requestAnimationFrame(()=>requestAnimationFrame(resizeGibsMap));setTimeout(resizeGibsMap,300);new ResizeObserver(resizeGibsMap).observe(document.getElementById('map'));
 </script></body></html>"""
-    html = html.replace("__LAYER__", str(layer_id)).replace("__DATE__", str(observation_date))
+    html = html.replace("__LAYER__", str(layer_id)).replace("__DATE__", str(observation_date)).replace("__FOCUS_BOUNDS__", json.dumps(focus_bounds))
     st.iframe(html, height=height, alt="Interactive NASA atmospheric observation map")
 
 
 def render_leaflet_points(data_frame, *, color_by=None, category_colors=None,
                           popup_columns=None, height=520, point_limit=2000, thermal=False,
-                          pixel_size_meters=1000, key="map"):
+                          pixel_size_meters=1000, key="map", focus_bounds=None):
     """Render touch-friendly markers and, optionally, an aggregated thermal surface."""
+    if focus_bounds is None:
+        focus_bounds = globals().get("country_focus_bounds")
     if data_frame is None or data_frame.empty or not {"lat", "lon"}.issubset(data_frame.columns):
         st.info("No mappable coordinates are available for this layer.")
         return
@@ -884,7 +951,9 @@ html,body,#map{{height:100%;width:100%;margin:0;background:#071426}}.leaflet-con
 </style></head><body><div id="map"></div><div class="map-note">__NOTE____LEGEND__</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
 const rows={payload}; const thermalCells={surface_payload}; const thermalRadiusMeters={surface_radius_meters};
-const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true}}).setView([18,0],2);
+const focusBounds={json.dumps(focus_bounds)};
+const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true}});
+if(focusBounds)map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]],{{padding:[24,24],maxZoom:8}});else map.setView([18,0],2);
 L.control.zoom({{position:'topright'}}).addTo(map);
  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,noWrap:true,bounds:[[-85,-180],[85,180]],attribution:'&copy; OpenStreetMap contributors'}}).addTo(map);
 if(thermalCells.length){{
@@ -2188,10 +2257,16 @@ with st.sidebar:
                 "Choose one or more countries",
                 available_countries,
                 key="fire_alert_countries",
+                max_selections=5,
             )
         else:
             st.warning("Country boundaries could not be loaded, so country-specific alerts are unavailable.")
-    st.caption("Selected countries filter point maps and new-fire alerts. Satellite imagery remains global. FIRMS detections are unconfirmed; country matching uses generalized boundaries.")
+    st.caption("Selected countries filter point maps and new-fire alerts. Satellite imagery stays global but zooms to your selection. FIRMS detections are unconfirmed; country matching uses generalized boundaries.")
+    country_focus_bounds = (
+        selected_country_focus_bounds(selected_countries, country_boundaries)
+        if country_scope_mode == "Selected countries" and selected_countries
+        else None
+    )
 
     firms_url = st.text_input(
         "Optional FIRMS CSV URL override",
