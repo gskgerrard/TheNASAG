@@ -2155,6 +2155,7 @@ with st.sidebar:
 # FETCH LIVE DATA
 # ============================================================
 
+live_load_status = st.status("Connecting to NASA feeds…", expanded=False)
 live_events, live_error = fetch_eonet_events(limit=event_limit)
 firms_url_loaded = False
 
@@ -2244,6 +2245,12 @@ if live_events is not None and not live_events.empty and not show_all_geometry:
         .groupby("event_id", as_index=False)
         .tail(1)
     )
+
+live_load_status.update(
+    label="NASA feed check complete",
+    state="complete",
+    expanded=False,
+)
 
 
 # ============================================================
