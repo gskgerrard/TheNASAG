@@ -692,14 +692,14 @@ def sample_map_points(data_frame, max_points=2000, rank_by=None):
     return pd.concat([strongest, sampled]).drop_duplicates().copy()
 
 
-def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_cells=3000):
+def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_cells=4500):
     """Aggregate detections into a lightweight, zoom-scaled thermal surface."""
     if data_frame is None or data_frame.empty:
         return [], 0, "nearby point density"
 
-    # Keep bins close to the source pixel size so adjacent detections form
-    # continuous patches instead of isolated circles when the user zooms in.
-    step_degrees = max(0.003, (float(pixel_size_meters) / 111_195.0) * 1.25)
+    # Merge neighboring sensor pixels into the broad translucent clusters
+    # used by the original map style.
+    step_degrees = max(0.01, (float(pixel_size_meters) / 111_195.0) * 3.0)
     numeric = pd.to_numeric(data_frame[value_column], errors="coerce") if value_column in data_frame.columns else pd.Series(np.nan, index=data_frame.index)
     has_measurement = numeric.notna().any()
     work = data_frame[["lat", "lon"]].copy()
@@ -739,12 +739,7 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
 
     low = float(cells["value"].quantile(0.02))
     high = float(cells["value"].quantile(0.98))
-    is_fire_signal = value_column in {"frp", "fire_intensity", "latest_risk"}
-    stops = (
-        [(127, 29, 29), (185, 28, 28), (234, 88, 12), (249, 115, 22), (255, 224, 102)]
-        if is_fire_signal
-        else [(34, 197, 94), (132, 204, 22), (234, 179, 8), (249, 115, 22), (239, 68, 68)]
-    )
+    stops = [(34, 197, 94), (132, 204, 22), (234, 179, 8), (249, 115, 22), (239, 68, 68)]
     records = []
     for row in cells.itertuples(index=False):
         fraction = 0.5 if high <= low else min(1.0, max(0.0, (float(row.value) - low) / (high - low)))
@@ -1070,7 +1065,6 @@ html,body,#map{{height:100%;width:100%;margin:0;background:#071426}}.leaflet-con
 </style></head><body><div id="map"></div><div class="map-note">__NOTE____LEGEND__</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
 const rows={payload}; const thermalCells={surface_payload}; const thermalRadiusMeters={surface_radius_meters};
-const fireSurface={str(color_by in {"frp", "fire_intensity", "latest_risk"}).lower()};
 const thermal={str(thermal).lower()};
 const focusBounds={json.dumps(focus_bounds)};
 const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true,worldCopyJump:false,minZoom:1}});
@@ -1087,7 +1081,7 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
    ctx.globalCompositeOperation='source-over';
- for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(64,Math.max(6,physicalRadius*.85));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'ee');grad.addColorStop(.38,cell.color+'bb');grad.addColorStop(.74,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=Math.min(.78,cell.strength*(fireSurface?1.35:1));ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(30,Math.max(12,physicalRadius*3.5));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
  }});
  new ThermalSurface().addTo(map);
 }}
@@ -1096,15 +1090,11 @@ const box=document.createElement('div');for(const [label,value] of Object.entrie
 if(!Object.keys(item.details).length){{const line=document.createElement('div');line.textContent=item.lat.toFixed(3)+', '+item.lon.toFixed(3);box.appendChild(line)}}marker.bindPopup(box)}}
 </script></body></html>""".replace(
         "__NOTE__",
-        ((f"Wildfire-style glow · deep red → yellow = {surface_basis} · soft edges are visual only; no smoke plume or perimeter is inferred · {len(surface_rows):,} supported areas"
-          if color_by in {"frp", "fire_intensity", "latest_risk"}
-          else f"Soft heat map · green → red = {surface_basis} · no supported points = transparent · {len(surface_rows):,} supported areas") if thermal
+        (f"Soft heat map · green → red = {surface_basis} · no supported points = transparent · {len(surface_rows):,} supported areas" if thermal
          else f"{len(frame):,} of {total:,} mapped · drag to pan · pinch or use +/− to zoom")
     ).replace(
         "__LEGEND__",
-        ('<div class="thermal-scale"><span>LOW</span><i style="background:linear-gradient(90deg,#7f1d1d,#b91c1c,#ea580c,#f97316,#ffe066)"></i><span>HIGH</span></div>'
-         if color_by in {"frp", "fire_intensity", "latest_risk"} else
-         '<div class="thermal-scale"><span>LOW</span><i></i><span>HIGH</span></div>') if thermal else ""
+        '<div class="thermal-scale"><span>LOW</span><i></i><span>HIGH</span></div>' if thermal else ""
     )
     st.iframe(html, height=height, width="stretch", tab_index=0, alt="Interactive zoomable map")
 
@@ -3086,7 +3076,7 @@ with tab_global_map:
                         key="map_firms_global",
                     )
                 if map_view == "Soft heat map":
-                    st.caption(f"Data source: {firms_display_source}. The red-to-yellow glow follows neighboring NASA FIRMS hotspots; soft edges are visual styling, not smoke, ground temperature, or a fire perimeter.")
+                    st.caption(f"Data source: {firms_display_source}. Soft heat colors show relative satellite fire radiative power (FRP) across supported clusters, not ground temperature or fire perimeters. Isolated detections remain available in the standard point map.")
                 else:
                     st.caption(f"Data source: {firms_display_source}. NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
@@ -3954,7 +3944,7 @@ with tab_live_fire:
             )
         if map_view == "Soft heat map":
             style_label = "Soft heat map"
-            st.caption(f"{style_label} follows neighboring NASA FIRMS hotspots by relative satellite fire radiative power (FRP). Soft edges are visual styling, not smoke, ground temperature, or fire perimeters.")
+            st.caption(f"{style_label} colors supported clusters of NASA FIRMS fire detections by relative satellite fire radiative power (FRP), not ground temperature or fire perimeters.")
         else:
             st.caption("NASA FIRMS detections are shown as orange/red points. A detection does not confirm a wildfire; use the table for the full feed.")
 
