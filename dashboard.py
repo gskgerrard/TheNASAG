@@ -3083,12 +3083,6 @@ with tab_global_map:
         "Live EONET Events",
         "FIRMS Fires",
         "Estimated Fire Intensity",
-        "Local Fire proxy",
-        "Local Heat proxy",
-        "Local Smoke proxy",
-        "Local Haze proxy",
-        "Local Flood proxy",
-        "Local CO₂ proxy",
     ]
 
     layer = st.selectbox("Map layer", layer_options)
