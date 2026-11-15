@@ -416,6 +416,13 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     margin-bottom: 0;
 }
 
+.home-earth {
+    text-align: center;
+    font-size: 56px;
+    line-height: 1;
+    filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.45));
+}
+
 .card {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.10);
@@ -511,6 +518,7 @@ label *,
     }
     .st-key-home_hero h1 { font-size: 28px; }
     .st-key-home_hero p { font-size: 15px; }
+    .home-earth { font-size: 34px; }
     h1 { font-size: 1.65rem !important; }
     h2 { font-size: 1.35rem !important; }
     h3 { font-size: 1.1rem !important; }
@@ -2420,7 +2428,7 @@ ensure_coordinates_file(registry)
 # ============================================================
 
 with st.container(key="home_hero"):
-    logo_column, title_column = st.columns([1, 5])
+    logo_column, title_column, earth_column = st.columns([1, 5, 0.55])
     with logo_column:
         if HOME_ART_PATH.is_file():
             st.image(str(HOME_ART_PATH), width=170)
@@ -2432,6 +2440,8 @@ with st.container(key="home_hero"):
             """,
             unsafe_allow_html=True,
         )
+    with earth_column:
+        st.markdown("<div class='home-earth'>🌍</div>", unsafe_allow_html=True)
 
 with st.container(key="floating_login"):
     account_button_label = "👤 Account" if account_is_logged_in() else "👤 Log in"
