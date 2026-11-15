@@ -692,7 +692,7 @@ def sample_map_points(data_frame, max_points=2000, rank_by=None):
     return pd.concat([strongest, sampled]).drop_duplicates().copy()
 
 
-def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_cells=9000):
+def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_cells=3000):
     """Aggregate detections into a lightweight, zoom-scaled thermal surface."""
     if data_frame is None or data_frame.empty:
         return [], 0, "nearby point density"
@@ -943,10 +943,13 @@ const map = L.map('map', {zoomControl:false, tap:true, scrollWheelZoom:false, wo
 if(focusBounds) map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]], {padding:[8,8],maxZoom:10});
 else map.setView([18, 0], 1.6);
 L.control.zoom({position:'topright'}).addTo(map);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+const baseTiles=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   minZoom:1, maxZoom:18, noWrap:true, bounds:[[-85,-180],[85,180]],
   attribution: '&copy; OpenStreetMap contributors'
-}).addTo(map);
+});
+let baseTileErrors=0, fallbackBaseAdded=false;
+baseTiles.on('tileerror',()=>{baseTileErrors+=1;if(baseTileErrors>=3&&!fallbackBaseAdded){fallbackBaseAdded=true;baseTiles.remove();L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',{minZoom:1,maxZoom:19,noWrap:true,bounds:[[-85,-180],[85,180]],attribution:'&copy; OpenStreetMap contributors &copy; CARTO'}).addTo(map)}});
+baseTiles.addTo(map);
 const status = document.getElementById('status');
 let loaded = false, errors = 0;
 let nasa;
@@ -1073,15 +1076,18 @@ const focusBounds={json.dumps(focus_bounds)};
 const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true,worldCopyJump:false,minZoom:1}});
 if(focusBounds)map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]],{{padding:[8,8],maxZoom:10}});else map.setView([18,0],1.6);
 L.control.zoom({{position:'topright'}}).addTo(map);
-L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{minZoom:1,maxZoom:19,noWrap:true,bounds:[[-85,-180],[85,180]],attribution:'&copy; OpenStreetMap contributors'}}).addTo(map);
+const baseTiles=L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{minZoom:1,maxZoom:19,noWrap:true,bounds:[[-85,-180],[85,180]],attribution:'&copy; OpenStreetMap contributors'}});
+let baseTileErrors=0, fallbackBaseAdded=false;
+baseTiles.on('tileerror',()=>{{baseTileErrors+=1;if(baseTileErrors>=3&&!fallbackBaseAdded){{fallbackBaseAdded=true;baseTiles.remove();L.tileLayer('https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png',{{minZoom:1,maxZoom:19,noWrap:true,bounds:[[-85,-180],[85,180]],attribution:'&copy; OpenStreetMap contributors &copy; CARTO'}}).addTo(map)}}}});
+baseTiles.addTo(map);
 if(thermalCells.length){{
  const ThermalSurface=L.Layer.extend({{
   onAdd:function(target){{this._map=target;this._canvas=L.DomUtil.create('canvas','thermal-canvas');this._canvas.style.position='absolute';target.getPanes().overlayPane.insertBefore(this._canvas,target.getPanes().overlayPane.firstChild);target.on('moveend zoomend resize',this._draw,this);this._draw()}},
   onRemove:function(target){{target.off('moveend zoomend resize',this._draw,this);L.DomUtil.remove(this._canvas)}},
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
-   ctx.globalCompositeOperation='source-over';ctx.filter=fireSurface?'blur(3px)':'none';
-  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(64,Math.max(6,physicalRadius*.85));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'ee');grad.addColorStop(.38,cell.color+'bb');grad.addColorStop(.74,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=Math.min(.78,cell.strength*(fireSurface?1.35:1));ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.filter='none';ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+   ctx.globalCompositeOperation='source-over';
+ for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(64,Math.max(6,physicalRadius*.85));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'ee');grad.addColorStop(.38,cell.color+'bb');grad.addColorStop(.74,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=Math.min(.78,cell.strength*(fireSurface?1.35:1));ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
  }});
  new ThermalSurface().addTo(map);
 }}
