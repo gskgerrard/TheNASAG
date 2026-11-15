@@ -2485,24 +2485,55 @@ def send_alert_email(recipient, subject, body):
     message["To"] = recipient
     message["Subject"] = subject
     message.set_content(body)
+    server = None
+    stage = "opening the SMTP connection"
+    port = None
+    use_ssl = False
+    accepted = False
     try:
         port = int(get_alert_secret("SMTP_PORT", "587"))
         use_ssl = get_alert_secret("SMTP_USE_SSL", "true" if port == 465 else "false").lower() in {"1", "true", "yes", "on"}
         server_type = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
-        with server_type(host, port, timeout=20) as server:
-            if not use_ssl:
-                server.starttls(context=ssl.create_default_context())
-            server.login(username, password)
-            server.send_message(message)
+        server = server_type(host, port, timeout=20)
+        if not use_ssl:
+            stage = "starting TLS encryption"
+            server.starttls(context=ssl.create_default_context())
+        stage = "logging in"
+        server.login(username, password)
+        stage = "sending the message"
+        server.send_message(message)
+        accepted = True
         return True, None
+    except smtplib.SMTPServerDisconnected as exc:
+        if accepted:
+            # A server can close the connection after accepting DATA; that
+            # should not turn a successfully accepted email into a false error.
+            return True, None
+        mode = "SSL" if use_ssl else "STARTTLS"
+        destination = f"{host}:{port}" if port else host
+        detail = str(exc).strip() or "the server closed the connection without a reply"
+        return False, f"SMTP disconnected while {stage} ({destination}, {mode}): {detail[:180]}"
     except smtplib.SMTPAuthenticationError:
         return False, "SMTP login was rejected. Check the username and password; some providers require an app-specific password."
     except smtplib.SMTPRecipientsRefused:
         return False, "The mail provider rejected the recipient address. Check the destination email."
     except (ValueError, OSError, smtplib.SMTPException) as exc:
-        return False, f"Email delivery failed ({type(exc).__name__}). Check the SMTP host, port, and TLS setting."
+        mode = "SSL" if use_ssl else "STARTTLS"
+        destination = f"{host}:{port}" if port else host
+        detail = str(exc).strip()
+        suffix = f": {detail[:180]}" if detail else ""
+        return False, f"Email failed while {stage} ({destination}, {mode}; {type(exc).__name__}){suffix}"
     except Exception as exc:
-        return False, f"Email delivery failed ({type(exc).__name__})."
+        return False, f"Email failed while {stage} ({type(exc).__name__}): {str(exc)[:180]}"
+    finally:
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                try:
+                    server.close()
+                except Exception:
+                    pass
 
 
 def send_aqi_email(recipient, subject, body):
@@ -3143,7 +3174,7 @@ if not st.session_state.get("_soft_heat_map_default_v1"):
     map_view_keys = ["global_map_view", "live_events_map_view", "firms_map_view"]
     map_view_keys.extend(
         f"local_{column}_map_view"
-        for column in ("fire_intensity", "heat_intensity", "smoke_intensity", "haze_intensity", "flood_intensity", "co2_intensity")
+        for column in ("fire_intensity", "fire_risk_proxy", "heat_intensity", "smoke_intensity", "haze_intensity", "flood_intensity", "co2_intensity")
     )
     for map_view_key in map_view_keys:
         st.session_state[map_view_key] = "Soft heat map"
@@ -3162,7 +3193,7 @@ with tab_global_map:
     layer = st.selectbox("Map layer", layer_options)
     map_view = st.radio(
         "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
-        index=2, horizontal=True, key="global_map_view",
+        index=None, horizontal=True, key="global_map_view",
     )
     if map_view == "Globe / flat map":
         map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="global_map_style")
@@ -3601,7 +3632,7 @@ with tab_local_hazards:
                         if not map_df.empty:
                             map_view = st.radio(
                                 "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
-                                index=2, horizontal=True, key=f"local_{col}_map_view",
+                                index=None, horizontal=True, key=f"local_{col}_map_view",
                             )
                             if map_view != "Globe / flat map":
                                 render_leaflet_points(map_df, color_by=col, popup_columns=["region", col],
@@ -4155,7 +4186,7 @@ with tab_live_events:
         if not mapped_events.empty:
             map_view = st.radio(
                 "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
-                index=2, horizontal=True, key="live_events_map_view",
+                index=None, horizontal=True, key="live_events_map_view",
             )
             if map_view != "Globe / flat map":
                 render_leaflet_points(mapped_events, color_by="hazard", category_colors=HAZARD_COLORS,
@@ -4221,7 +4252,7 @@ with tab_live_fire:
 
         map_view = st.radio(
             "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
-            index=2, horizontal=True, key="firms_map_view",
+            index=None, horizontal=True, key="firms_map_view",
         )
         if map_view != "Globe / flat map":
             if map_view == "Soft heat map":
