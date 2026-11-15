@@ -2425,27 +2425,13 @@ ensure_coordinates_file(registry)
 
 
 # ============================================================
-# HERO
+# HOME BRANDING
 # ============================================================
 
-st.markdown(
-    """
-    <div class="hero">
-        <div class="earth-badge">🌍</div>
-        <h1>Earth Emergency Command</h1>
-        <p>
-            NASA EONET and FIRMS feeds, local environmental indicators,
-            satellite imagery, and mapped observations in one dashboard.
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
 if HOME_ART_PATH.is_file():
-    art_left, art_center, art_right = st.columns([1, 2, 1])
+    art_left, art_center, art_right = st.columns([1, 1, 1])
     with art_center:
-        st.image(str(HOME_ART_PATH), width="stretch", caption="EarthGuard · Detect · Prevent · Protect")
+        st.image(str(HOME_ART_PATH), width=360)
 
 with st.container(key="floating_login"):
     account_button_label = "👤 Account" if account_is_logged_in() else "👤 Log in"
