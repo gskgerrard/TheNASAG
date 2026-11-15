@@ -2262,6 +2262,16 @@ def search_air_quality_places(query):
         return [], f"Could not search locations ({type(exc).__name__})."
 
 
+def searched_air_quality_place_label(place):
+    place_label = " · ".join(
+        part for part in [place.get("name", "Place"), place.get("admin1"), place.get("country", "")]
+        if part
+    )
+    if place.get("population"):
+        place_label += f" · pop. {int(place['population']):,}"
+    return place_label
+
+
 def get_alert_secret(name, default=""):
     """Read alert-provider configuration from environment or Streamlit secrets."""
     value = os.getenv(name, "").strip()
@@ -3393,6 +3403,7 @@ with tab_atmosphere:
         st.write("")
         aqi_search_clicked = st.button("Search places", key="air_quality_search_places", width="stretch")
     if aqi_search_clicked:
+        st.session_state.pop("air_quality_place_results", None)
         if len(aqi_place_query.strip()) < 2:
             st.warning("Enter at least two characters to search.")
         else:
@@ -3404,6 +3415,11 @@ with tab_atmosphere:
                 st.info("No matching places found. Try adding a country, such as ‘Jakarta, Indonesia’.")
             else:
                 st.session_state["air_quality_place_results"] = place_results
+                first_place = place_results[0]
+                selected_place_label = searched_air_quality_place_label(first_place)
+                st.session_state["air_quality_location_choice"] = selected_place_label
+                st.session_state["_air_quality_search_auto_load"] = True
+                st.success(f"Found {selected_place_label}. Loading its current AQI below.")
 
     searched_places = st.session_state.get("air_quality_place_results", [])
 
@@ -3414,10 +3430,7 @@ with tab_atmosphere:
         location_label = f"{location_row['region']} · {country_name} ({float(location_row['lat']):.2f}, {float(location_row['lon']):.2f})"
         aqi_location_lookup[location_label] = (float(location_row["lat"]), float(location_row["lon"]))
     for place in searched_places:
-        place_country = place.get("country", "")
-        place_label = " · ".join(part for part in [place.get("name", "Place"), place.get("admin1"), place_country] if part)
-        if place.get("population"):
-            place_label += f" · pop. {int(place['population']):,}"
+        place_label = searched_air_quality_place_label(place)
         aqi_location_lookup[place_label] = (float(place["latitude"]), float(place["longitude"]))
     aqi_manual_label = "Enter coordinates manually"
     aqi_location_choices = list(aqi_location_lookup) + [aqi_manual_label]
@@ -3521,7 +3534,8 @@ with tab_atmosphere:
 
     with st.expander("🔔 AQI reminders by email or text", expanded=False):
         st.caption("Alerts are checked every five minutes while the dashboard is open with Auto refresh on. Delivery needs your own SMTP/Twilio settings in app secrets.")
-        st.number_input("Alert when U.S. AQI reaches", min_value=51, max_value=500, value=101, step=10, key="aqi_alert_threshold")
+        st.number_input("Alert when AQI reaches", min_value=51, max_value=500, value=101, step=10, key="aqi_alert_threshold")
+        st.caption("AQI alerts work worldwide; readings use the U.S. AQI scale.")
         email_enabled_col, sms_enabled_col = st.columns(2)
         with email_enabled_col:
             st.checkbox("Email alert", key="aqi_alert_email_enabled")
@@ -3569,7 +3583,9 @@ with tab_atmosphere:
     elif alerts_active and followed_places and not auto_refresh:
         st.caption("Turn on Auto refresh in the sidebar to check AQI reminders every five minutes.")
 
-    if st.button("Load current AQI", key="load_air_quality"):
+    load_aqi_clicked = st.button("Load current AQI", key="load_air_quality")
+    auto_load_searched_place = st.session_state.pop("_air_quality_search_auto_load", False)
+    if load_aqi_clicked or auto_load_searched_place:
         with st.spinner(f"Loading air quality for {location_name}…"):
             air_quality_result, air_quality_error = fetch_air_quality(aqi_lat, aqi_lon)
         if air_quality_error:
