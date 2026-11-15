@@ -739,7 +739,12 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
 
     low = float(cells["value"].quantile(0.02))
     high = float(cells["value"].quantile(0.98))
-    stops = [(34, 197, 94), (132, 204, 22), (234, 179, 8), (249, 115, 22), (239, 68, 68)]
+    is_fire_signal = value_column in {"frp", "fire_intensity", "latest_risk"}
+    stops = (
+        [(127, 29, 29), (185, 28, 28), (234, 88, 12), (249, 115, 22), (255, 224, 102)]
+        if is_fire_signal
+        else [(34, 197, 94), (132, 204, 22), (234, 179, 8), (249, 115, 22), (239, 68, 68)]
+    )
     records = []
     for row in cells.itertuples(index=False):
         fraction = 0.5 if high <= low else min(1.0, max(0.0, (float(row.value) - low) / (high - low)))
@@ -1062,6 +1067,7 @@ html,body,#map{{height:100%;width:100%;margin:0;background:#071426}}.leaflet-con
 </style></head><body><div id="map"></div><div class="map-note">__NOTE____LEGEND__</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
 const rows={payload}; const thermalCells={surface_payload}; const thermalRadiusMeters={surface_radius_meters};
+const fireSurface={str(color_by in {"frp", "fire_intensity", "latest_risk"}).lower()};
 const thermal={str(thermal).lower()};
 const focusBounds={json.dumps(focus_bounds)};
 const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true,worldCopyJump:false,minZoom:1}});
@@ -1075,7 +1081,7 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
    ctx.globalCompositeOperation='source-over';
-  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(30,Math.max(12,physicalRadius*3.5));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(30,Math.max(12,physicalRadius*3.5));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;if(fireSurface){{const smokeRadius=r*1.6,smoke=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,smokeRadius);smoke.addColorStop(0,'#4b282d55');smoke.addColorStop(.48,'#5b34302c');smoke.addColorStop(1,'#5b343000');ctx.globalAlpha=.55;ctx.fillStyle=smoke;ctx.beginPath();ctx.arc(p.x,p.y,smokeRadius,0,Math.PI*2);ctx.fill()}}const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'ee');grad.addColorStop(.38,cell.color+'bb');grad.addColorStop(.74,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=Math.min(.78,cell.strength*(fireSurface?1.35:1));ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
  }});
  new ThermalSurface().addTo(map);
 }}
@@ -1084,11 +1090,15 @@ const box=document.createElement('div');for(const [label,value] of Object.entrie
 if(!Object.keys(item.details).length){{const line=document.createElement('div');line.textContent=item.lat.toFixed(3)+', '+item.lon.toFixed(3);box.appendChild(line)}}marker.bindPopup(box)}}
 </script></body></html>""".replace(
         "__NOTE__",
-        (f"Soft heat map · green → red = {surface_basis} · no supported points = transparent · {len(surface_rows):,} supported areas" if thermal
+        ((f"Wildfire-style glow · deep red → yellow = {surface_basis} · outer halo is visual only · {len(surface_rows):,} supported areas"
+          if color_by in {"frp", "fire_intensity", "latest_risk"}
+          else f"Soft heat map · green → red = {surface_basis} · no supported points = transparent · {len(surface_rows):,} supported areas") if thermal
          else f"{len(frame):,} of {total:,} mapped · drag to pan · pinch or use +/− to zoom")
     ).replace(
         "__LEGEND__",
-        '<div class="thermal-scale"><span>LOW</span><i></i><span>HIGH</span></div>' if thermal else ""
+        ('<div class="thermal-scale"><span>LOW</span><i style="background:linear-gradient(90deg,#7f1d1d,#b91c1c,#ea580c,#f97316,#ffe066)"></i><span>HIGH</span></div>'
+         if color_by in {"frp", "fire_intensity", "latest_risk"} else
+         '<div class="thermal-scale"><span>LOW</span><i></i><span>HIGH</span></div>') if thermal else ""
     )
     st.iframe(html, height=height, width="stretch", tab_index=0, alt="Interactive zoomable map")
 
