@@ -707,13 +707,19 @@ def sample_map_points(data_frame, max_points=2000, rank_by=None):
     return pd.concat([strongest, sampled]).drop_duplicates().copy()
 
 
-def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_points=2500):
-    """Build a smooth surface from sampled source coordinates, without grid-snapping points."""
+def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_points=6000):
+    """Build a soft surface from real detections, measuring cluster support on all input rows."""
     if data_frame is None or data_frame.empty:
         return [], 0, "nearby point density"
 
     frame = sample_map_points(data_frame, max_points=max_points, rank_by=value_column)
     work = frame[["lat", "lon"]].copy()
+    # FIRMS combines 375 m VIIRS and 1 km MODIS detections. Keep each sensor's
+    # native footprint when feeds are combined instead of assigning all points
+    # the first sensor's resolution.
+    instrument = frame.get("instrument", frame.get("satellite", pd.Series("", index=frame.index)))
+    instrument = instrument.astype(str).str.upper()
+    work["__pixel_size_meters"] = np.where(instrument.str.contains("MODIS|TERRA|AQUA"), 1000.0, float(pixel_size_meters))
     numeric = (
         pd.to_numeric(frame[value_column], errors="coerce")
         if value_column and value_column in frame.columns
@@ -722,12 +728,20 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
     has_measurement = numeric.notna().any()
     work["__value"] = numeric if has_measurement else 1.0
 
-    # Use coarse bins only to estimate support; every heat spot remains at
-    # its real input coordinate, preventing visible latitude/longitude grids.
-    step_degrees = max(0.01, (float(pixel_size_meters) / 111_195.0) * 3.0)
-    work["__lat_cell"] = np.floor(work["lat"] / step_degrees)
-    work["__lon_cell"] = np.floor(work["lon"] / step_degrees)
-    bin_counts = work.groupby(["__lat_cell", "__lon_cell"], sort=False).size()
+    # Estimate neighborhood support from the FULL feed, not the display sample.
+    # This avoids losing real regional clusters when a global feed has tens of
+    # thousands of detections. Bins are used only for counts; points stay at
+    # their satellite-reported coordinates, so no grid is drawn on the map.
+    support_step = max(0.01, (float(pixel_size_meters) / 111_195.0) * 3.0)
+    full_work = data_frame[["lat", "lon"]].copy()
+    full_work["lat"] = pd.to_numeric(full_work["lat"], errors="coerce")
+    full_work["lon"] = pd.to_numeric(full_work["lon"], errors="coerce")
+    full_work = full_work.dropna(subset=["lat", "lon"])
+    full_work["__lat_cell"] = np.floor(full_work["lat"] / support_step).astype("int32")
+    full_work["__lon_cell"] = np.floor(full_work["lon"] / support_step).astype("int32")
+    bin_counts = full_work.groupby(["__lat_cell", "__lon_cell"], sort=False).size()
+    work["__lat_cell"] = np.floor(work["lat"] / support_step).astype("int32")
+    work["__lon_cell"] = np.floor(work["lon"] / support_step).astype("int32")
     support = [
         sum(int(bin_counts.get((int(lat_cell) + dlat, int(lon_cell) + dlon), 0))
             for dlat in (-1, 0, 1) for dlon in (-1, 0, 1))
@@ -752,6 +766,7 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
             "lat": float(row["lat"]), "lon": float(row["lon"]), "color": color,
             "strength": 0.18 + 0.32 * fraction,
             "support": int(local_support),
+            "pixel_size_meters": float(row["__pixel_size_meters"]),
         })
     records.sort(key=lambda record: record["strength"])
     if value_column == "frp":
@@ -1086,7 +1101,7 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const heatCanvas=document.createElement('canvas');heatCanvas.width=canvas.width;heatCanvas.height=canvas.height;const heatCtx=heatCanvas.getContext('2d');heatCtx.setTransform(dpr,0,0,dpr,0,0);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
    heatCtx.globalCompositeOperation='source-over';
-  const cellRadius=cell=>{{const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.max(fireSurface?7:12,physicalRadius*3.5*supportScale);return fireSurface?Math.min(90,16+zoom*4,baseRadius):Math.min(30,baseRadius)}};
+  const cellRadius=cell=>{{const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),nativePixel=cell.pixel_size_meters||thermalRadiusMeters,physicalRadius=nativePixel/metersPerPixel,supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.max(fireSurface?7:12,physicalRadius*3.5*supportScale);return fireSurface?Math.min(90,16+zoom*4,baseRadius):Math.min(30,baseRadius)}};
   for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=heatCtx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');heatCtx.globalAlpha=cell.strength*(fireSurface ? 0.7 : 1);heatCtx.fillStyle=grad;heatCtx.beginPath();heatCtx.arc(p.x,p.y,r,0,Math.PI*2);heatCtx.fill()}}heatCtx.globalAlpha=1;heatCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter='blur(5px)';ctx.drawImage(heatCanvas,0,0);ctx.filter='none';ctx.restore()}}
  }});
  new ThermalSurface().addTo(map);
@@ -2718,7 +2733,9 @@ elif firms_key:
     firms_source_used = ", ".join(available_sources)
     if available_frames:
         firms_df = pd.concat(available_frames, ignore_index=True, sort=False)
-        dedupe_columns = [column for column in ("lat", "lon", "date", "acq_time", "frp") if column in firms_df.columns]
+        # Do not collapse coincident observations from separate sensors: they
+        # are independent satellite passes and help validate local clusters.
+        dedupe_columns = [column for column in ("lat", "lon", "date", "acq_time", "frp", "satellite", "instrument") if column in firms_df.columns]
         if len(dedupe_columns) >= 3:
             firms_df = firms_df.drop_duplicates(subset=dedupe_columns).reset_index(drop=True)
         firms_error = (
