@@ -780,7 +780,7 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
         basis = "FRP (relative)"
     elif not has_measurement:
         basis = "nearby event density"
-    elif value_column == "latest_risk" or (isinstance(value_column, str) and value_column.endswith("_intensity")):
+    elif value_column in {"latest_risk", "fire_risk_proxy"} or (isinstance(value_column, str) and value_column.endswith("_intensity")):
         basis = "local proxy/risk score (relative)"
     else:
         basis = "selected numeric value"
@@ -3437,7 +3437,7 @@ with tab_local_hazards:
         st.warning("No local data loaded.")
 
     else:
-        hazard_options = {
+        all_hazard_options = {
             "Fire risk estimate": ("fire_risk_proxy", "YlOrRd"),
             "Fire detections": ("fire_intensity", "YlOrRd"),
             "Heat": ("heat_intensity", "Hot"),
@@ -3446,15 +3446,31 @@ with tab_local_hazards:
             "Flood": ("flood_intensity", "Blues"),
             "CO2": ("co2_intensity", "Greens"),
         }
+        hazard_options = {
+            name: (column, scale)
+            for name, (column, scale) in all_hazard_options.items()
+            if column in raw_data.columns
+            and pd.to_numeric(raw_data[column], errors="coerce").notna().any()
+        }
+        st.caption(
+            "Only signals with values in your local files are listed. Smoke, haze, CO₂, "
+            "and direct fire detections need their own data source; they are not guessed "
+            "from unrelated measurements. Use FIRMS for satellite fire detections."
+        )
+        if not hazard_options:
+            hazard_options = {"No local signals available": (None, None)}
 
         selected_hazard = st.selectbox(
             "Select hazard",
-            list(hazard_options.keys())
+            list(hazard_options.keys()),
+            key="local_hazard_picker_v2",
         )
 
         col, color_scale = hazard_options[selected_hazard]
 
-        if col not in raw_data.columns:
+        if col is None:
+            st.info("Add local data with dated measurements to show a hazard chart and map here.")
+        elif col not in raw_data.columns:
             st.warning(f"{selected_hazard} signal not available.")
 
         else:
