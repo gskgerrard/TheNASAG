@@ -187,8 +187,7 @@ HAZARD_COLORS = {
 }
 
 LOCAL_PROXY_LAYERS = {
-    "Local Fire proxy": "fire_intensity",
-    "Local Fire Risk Estimate": "fire_risk_proxy",
+    "Local Fire proxy": "fire_risk_proxy",
     "Local Heat proxy": "heat_intensity",
     "Local Smoke proxy": "smoke_intensity",
     "Local Haze proxy": "haze_intensity",
@@ -3085,7 +3084,6 @@ with tab_global_map:
         "FIRMS Fires",
         "Estimated Fire Intensity",
         "Local Fire proxy",
-        "Local Fire Risk Estimate",
         "Local Heat proxy",
         "Local Smoke proxy",
         "Local Haze proxy",
@@ -3255,11 +3253,6 @@ with tab_global_map:
                     color_scale = "YlOrRd"
 
             elif layer == "Local Fire proxy":
-                color = "fire_intensity"
-                size = "fire_intensity"
-                color_scale = "YlOrRd"
-
-            elif layer == "Local Fire Risk Estimate":
                 color = "fire_risk_proxy"
                 size = "fire_risk_proxy"
                 color_scale = "YlOrRd"
@@ -3451,8 +3444,8 @@ with tab_local_hazards:
 
     else:
         hazard_options = {
-            "Fire": ("fire_intensity", "YlOrRd"),
             "Fire risk estimate": ("fire_risk_proxy", "YlOrRd"),
+            "Fire detections": ("fire_intensity", "YlOrRd"),
             "Heat": ("heat_intensity", "Hot"),
             "Smoke": ("smoke_intensity", "Greys"),
             "Haze": ("haze_intensity", "PuBu"),
@@ -3473,7 +3466,7 @@ with tab_local_hazards:
         else:
             st.markdown(f"### {selected_hazard} Timeline")
             timeline_source = raw_data
-            if selected_hazard == "Fire":
+            if selected_hazard == "Fire detections":
                 timeline_source = raw_data.dropna(subset=[col])
                 st.caption("Shows only rows with direct fire/thermal measurements; weather and vegetation are not treated as fire detections.")
             elif selected_hazard == "Fire risk estimate":
@@ -3481,7 +3474,10 @@ with tab_local_hazards:
                 st.caption("Relative estimate from unusually warm and dry local conditions. This is not evidence of an active fire; NASA FIRMS provides the satellite fire detections.")
 
             if timeline_source.empty:
-                st.info(f"No direct {selected_hazard.lower()} measurements are available in the loaded local data.")
+                if selected_hazard == "Fire detections":
+                    st.info("No direct local fire detections are in these files. Choose NASA FIRMS Fires on the main map for satellite fire detections.")
+                else:
+                    st.info(f"No {selected_hazard.lower()} values are available in the loaded local data.")
             else:
                 timeline = (
                     timeline_source.groupby(pd.Grouper(key="date", freq="D"))[col]
