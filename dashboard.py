@@ -1102,7 +1102,7 @@ if(thermalCells.length){{
    // Draw localized supported values; the surface does not invent values between distant points.
    heatCtx.globalCompositeOperation='source-over';
   // Scale each heat mark with the map zoom so nearby views show larger footprints.
-  const cellRadius=cell=>{{const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),nativePixel=cell.pixel_size_meters||thermalRadiusMeters,physicalRadius=nativePixel/metersPerPixel,supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.max(3,physicalRadius*3.5*supportScale);return fireSurface?Math.min(90,baseRadius):Math.min(48,baseRadius)}};
+  const cellRadius=cell=>{{const zoomScale=Math.pow(2,zoom-5),supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.max(5,12*zoomScale*supportScale);return fireSurface?Math.min(72,baseRadius):Math.min(60,baseRadius)}};
   for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=heatCtx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');heatCtx.globalAlpha=cell.strength*(fireSurface ? 0.7 : 1);heatCtx.fillStyle=grad;heatCtx.beginPath();heatCtx.arc(p.x,p.y,r,0,Math.PI*2);heatCtx.fill()}}heatCtx.globalAlpha=1;heatCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter='blur(5px)';ctx.drawImage(heatCanvas,0,0);ctx.filter='none';ctx.restore()}}
  }});
  new ThermalSurface().addTo(map);
