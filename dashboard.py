@@ -756,6 +756,11 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
     stops = [(34, 197, 94), (132, 204, 22), (234, 179, 8), (249, 115, 22), (239, 68, 68)]
     records = []
     for (_, row), local_support, value in zip(work.iterrows(), support, values):
+        # A lone thermal anomaly can be a small burn or another hot surface.
+        # Only blend nearby independent detections into fire-like heat areas;
+        # isolated observations remain in the FIRMS records and point view.
+        if value_column == "frp" and local_support < 3:
+            continue
         fraction = 0.5 if high <= low else min(1.0, max(0.0, (float(value) - low) / (high - low)))
         segment = min(len(stops) - 2, int(fraction * (len(stops) - 1)))
         blend = fraction * (len(stops) - 1) - segment
@@ -1016,6 +1021,9 @@ def render_leaflet_points(data_frame, *, color_by=None, category_colors=None,
         surface_rows, surface_radius_meters, surface_basis = make_thermal_surface_records(
             frame, color_by, pixel_size_meters=pixel_size_meters
         )
+        if color_by == "frp" and not surface_rows:
+            st.info("No fire area has a group of at least three nearby FIRMS detections in this view. Isolated hotspots are kept out of the heat layer so they are not mistaken for a wildfire.")
+            return
     frame = sample_map_points(frame, max_points=point_limit, rank_by=color_by)
     if globals().get("country_boundaries"):
         frame["place"] = country_labels_for_points(frame, country_boundaries)
@@ -1101,7 +1109,7 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const heatCanvas=document.createElement('canvas');heatCanvas.width=canvas.width;heatCanvas.height=canvas.height;const heatCtx=heatCanvas.getContext('2d');heatCtx.setTransform(dpr,0,0,dpr,0,0);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
    heatCtx.globalCompositeOperation='source-over';
-  const cellRadius=cell=>{{if(fireSurface)return 24;const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,baseRadius=Math.max(12,physicalRadius*3.5);return Math.min(30,baseRadius)}};
+  const cellRadius=cell=>{{if(fireSurface)return 14;const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,baseRadius=Math.max(12,physicalRadius*3.5);return Math.min(30,baseRadius)}};
   for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=heatCtx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'dd');grad.addColorStop(.42,cell.color+'75');grad.addColorStop(1,cell.color+'00');heatCtx.globalAlpha=cell.strength*(fireSurface ? 0.9 : 1);heatCtx.fillStyle=grad;heatCtx.beginPath();heatCtx.arc(p.x,p.y,r,0,Math.PI*2);heatCtx.fill()}}heatCtx.globalAlpha=1;heatCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter='blur(5px)';ctx.drawImage(heatCanvas,0,0);ctx.filter='none';ctx.restore()}}
  }});
  new ThermalSurface().addTo(map);
@@ -3123,7 +3131,7 @@ with tab_global_map:
                         key="map_firms_global",
                     )
                 if map_view == "Soft heat map":
-                    st.caption(f"Data source: {firms_display_source}. Soft heat colors show relative satellite fire radiative power (FRP) across supported clusters, not ground temperature or fire perimeters. Isolated detections remain available in the standard point map.")
+                    st.caption(f"Data source: {firms_display_source}. Heat blobs require at least three nearby FIRMS detections to highlight clusters; this does not confirm a wildfire or show its perimeter. Single detections remain in the records table.")
                 else:
                     st.caption(f"Data source: {firms_display_source}. NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
@@ -4020,7 +4028,7 @@ with tab_live_fire:
             )
         if map_view == "Soft heat map":
             style_label = "Soft heat map"
-            st.caption(f"{style_label} colors supported clusters of NASA FIRMS fire detections by relative satellite fire radiative power (FRP), not ground temperature or fire perimeters.")
+            st.caption(f"{style_label} only shows groups of at least three nearby NASA FIRMS detections. This highlights clustered hotspots; it does not confirm a wildfire or show its perimeter. Single detections remain in the records table.")
         else:
             st.caption("NASA FIRMS detections are shown as orange/red points. A detection does not confirm a wildfire; use the table for the full feed.")
 
