@@ -748,7 +748,7 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
         color = "#" + "".join(
             f"{round(a + (b - a) * blend):02x}" for a, b in zip(stops[segment], stops[segment + 1])
         )
-        records.append({"lat": float(row.lat), "lon": float(row.lon), "color": color, "strength": 0.10 + 0.22 * fraction})
+        records.append({"lat": float(row.lat), "lon": float(row.lon), "color": color, "strength": 0.18 + 0.32 * fraction})
     records.sort(key=lambda record: record["strength"])
     if value_column == "frp":
         basis = "FRP (relative)"
@@ -1075,7 +1075,7 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
    ctx.globalCompositeOperation='source-over';
-  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(24,Math.max(9,physicalRadius*3.2));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'aa');grad.addColorStop(.42,cell.color+'50');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(30,Math.max(12,physicalRadius*3.5));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
  }});
  new ThermalSurface().addTo(map);
 }}
