@@ -578,6 +578,16 @@ def current_user_logged_in():
         return False
 
 
+def current_account_email():
+    """Return the email claim for the signed-in OIDC user, when available."""
+    if not current_user_logged_in():
+        return ""
+    try:
+        return str(getattr(st.user, "email", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def current_phone_user():
     """Return the phone number verified for this active Streamlit session."""
     return st.session_state.get("phone_signin_verified_number", "")
@@ -2715,15 +2725,18 @@ with st.sidebar:
         key="fire_alert_email_enabled",
         help="Sends one email per refresh batch of new FIRMS detections. Requires SMTP settings in app secrets."
     )
-    fire_email_to = ""
+    fire_email_to = current_account_email()
     if fire_email_enabled:
-        fire_email_to = st.text_input(
-            "Fire alert email address",
-            placeholder="you@example.com",
-            key="fire_alert_email_to",
-        ).strip()
+        if fire_email_to:
+            st.caption(f"Fire alert emails will go to your signed-in account: {fire_email_to}")
+        else:
+            fire_email_to = st.text_input(
+                "Fire alert email address",
+                placeholder="you@example.com",
+                key="fire_alert_email_to",
+            ).strip()
         if not fire_email_to:
-            st.caption("Enter an email address to receive fire alerts.")
+            st.caption("Sign in with an account that has an email address, or enter an address to receive fire alerts.")
     fire_sms_enabled = st.checkbox(
         "Text me when new fires are detected",
         key="fire_alert_sms_enabled",
