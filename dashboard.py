@@ -748,7 +748,7 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
         color = "#" + "".join(
             f"{round(a + (b - a) * blend):02x}" for a, b in zip(stops[segment], stops[segment + 1])
         )
-        records.append({"lat": float(row.lat), "lon": float(row.lon), "color": color, "strength": 0.22 + 0.42 * fraction})
+        records.append({"lat": float(row.lat), "lon": float(row.lon), "color": color, "strength": 0.10 + 0.22 * fraction})
     records.sort(key=lambda record: record["strength"])
     if value_column == "frp":
         basis = "FRP (relative)"
@@ -971,7 +971,7 @@ const resizeGibsMap=()=>map.invalidateSize({pan:false});requestAnimationFrame(()
 
 def render_leaflet_points(data_frame, *, color_by=None, category_colors=None,
                           popup_columns=None, height=520, point_limit=2000, thermal=False,
-                          show_points_on_thermal=False, pixel_size_meters=1000, key="map", focus_bounds=None):
+                          pixel_size_meters=1000, key="map", focus_bounds=None):
     """Render touch-friendly markers and, optionally, an aggregated thermal surface."""
     if focus_bounds is None:
         focus_bounds = globals().get("country_focus_bounds")
@@ -1043,9 +1043,9 @@ def render_leaflet_points(data_frame, *, color_by=None, category_colors=None,
             details["Interpretation"] = "Satellite thermal anomaly; wildfire not confirmed"
         records.append({
             "lat": float(row["lat"]), "lon": float(row["lon"]),
-            "color": "#f8fafc" if thermal and not show_points_on_thermal else color,
-            "radius": 4.5 if thermal and show_points_on_thermal else radius,
-            "opacity": 0.86 if thermal and show_points_on_thermal else 0.55 if thermal else 0.82,
+            "color": "#f8fafc" if thermal else color,
+            "radius": radius,
+            "opacity": 0.55 if thermal else 0.82,
             "details": details,
         })
 
@@ -1062,7 +1062,7 @@ html,body,#map{{height:100%;width:100%;margin:0;background:#071426}}.leaflet-con
 </style></head><body><div id="map"></div><div class="map-note">__NOTE____LEGEND__</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
 const rows={payload}; const thermalCells={surface_payload}; const thermalRadiusMeters={surface_radius_meters};
-const thermal={str(thermal).lower()}; const showPointsOnThermal={str(show_points_on_thermal).lower()};
+const thermal={str(thermal).lower()};
 const focusBounds={json.dumps(focus_bounds)};
 const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true,worldCopyJump:false,minZoom:1}});
 if(focusBounds)map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]],{{padding:[8,8],maxZoom:10}});else map.setView([18,0],1.6);
@@ -1073,18 +1073,18 @@ if(thermalCells.length){{
   onAdd:function(target){{this._map=target;this._canvas=L.DomUtil.create('canvas','thermal-canvas');this._canvas.style.position='absolute';target.getPanes().overlayPane.insertBefore(this._canvas,target.getPanes().overlayPane.firstChild);target.on('moveend zoomend resize',this._draw,this);this._draw()}},
   onRemove:function(target){{target.off('moveend zoomend resize',this._draw,this);L.DomUtil.remove(this._canvas)}},
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
-   // Draw only localized, supported FIRMS detections. No broad temperature layer is inferred.
-   ctx.globalCompositeOperation='lighter';
-  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(32,Math.max(14,physicalRadius*4.5));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'b8');grad.addColorStop(.42,cell.color+'70');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+   // Draw localized supported values; the surface does not invent values between distant points.
+   ctx.globalCompositeOperation='source-over';
+  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(24,Math.max(9,physicalRadius*3.2));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'aa');grad.addColorStop(.42,cell.color+'50');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
  }});
  new ThermalSurface().addTo(map);
 }}
-if(!thermal || showPointsOnThermal)for(const item of rows){{const marker=L.circleMarker([item.lat,item.lon],{{radius:item.radius,color:item.color,fillColor:item.color,fillOpacity:item.opacity,weight:thermalCells.length ? 0.6 : 1}}).addTo(map);
+if(!thermal)for(const item of rows){{const marker=L.circleMarker([item.lat,item.lon],{{radius:item.radius,color:item.color,fillColor:item.color,fillOpacity:item.opacity,weight:thermalCells.length ? 0.6 : 1}}).addTo(map);
 const box=document.createElement('div');for(const [label,value] of Object.entries(item.details)){{const line=document.createElement('div');line.textContent=label+': '+value;box.appendChild(line)}}
 if(!Object.keys(item.details).length){{const line=document.createElement('div');line.textContent=item.lat.toFixed(3)+', '+item.lon.toFixed(3);box.appendChild(line)}}marker.bindPopup(box)}}
 </script></body></html>""".replace(
         "__NOTE__",
-        (f"Localized fire-detection heat field · green → red = {surface_basis} · no detections = transparent · not ground temperature or fire perimeters · {len(surface_rows):,} cells" if thermal
+        (f"Soft heat map · green → red = {surface_basis} · no supported points = transparent · {len(surface_rows):,} supported areas" if thermal
          else f"{len(frame):,} of {total:,} mapped · drag to pan · pinch or use +/− to zoom")
     ).replace(
         "__LEGEND__",
@@ -2932,6 +2932,18 @@ with tab_command:
 # TAB: GLOBAL MAP
 # ============================================================
 
+# Switch existing sessions from the previous, overly dense heat style to the
+# softened heat-only view once. After that, each map's selector remains user controlled.
+if not st.session_state.get("_soft_heat_map_default_v1"):
+    map_view_keys = ["global_map_view", "live_events_map_view", "firms_map_view"]
+    map_view_keys.extend(
+        f"local_{column}_map_view"
+        for column in ("fire_intensity", "heat_intensity", "smoke_intensity", "haze_intensity", "flood_intensity", "co2_intensity")
+    )
+    for map_view_key in map_view_keys:
+        st.session_state[map_view_key] = "Soft heat map"
+    st.session_state["_soft_heat_map_default_v1"] = True
+
 with tab_global_map:
     st.markdown("## 🌍 Earth activity at a glance")
     st.caption("Start with the map. Choose a layer to explore NASA event reports, satellite fire detections, or local environmental signals.")
@@ -2950,8 +2962,8 @@ with tab_global_map:
 
     layer = st.selectbox("Map layer", layer_options)
     map_view = st.radio(
-        "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision", "Heat + points"],
-        horizontal=True, key="global_map_view",
+        "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
+        index=2, horizontal=True, key="global_map_view",
     )
     if map_view == "Globe / flat map":
         map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="global_map_style")
@@ -3001,8 +3013,7 @@ with tab_global_map:
                     if map_view != "Globe / flat map":
                         render_leaflet_points(mapped_events, color_by="hazard", category_colors=HAZARD_COLORS,
                                               popup_columns=["title", "place", "hazard", "categories", "date"], height=460,
-                                              thermal=map_view in {"Thermal vision", "Heat + points"},
-                                              show_points_on_thermal=map_view == "Heat + points",
+                                              thermal=map_view == "Soft heat map",
                                               key="map_eonet_global_leaflet")
                     else:
                         fig = px.scatter_geo(
@@ -3041,10 +3052,9 @@ with tab_global_map:
                 st.info("No fire detections are in the selected countries.")
             else:
                 if map_view != "Globe / flat map":
-                    if map_view in {"Thermal vision", "Heat + points"}:
+                    if map_view == "Soft heat map":
                         render_leaflet_points(firms_map_df, color_by="frp", height=460, point_limit=2000,
                                               thermal=True,
-                                              show_points_on_thermal=map_view == "Heat + points",
                                               pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
                                               key="map_firms_global_thermal_leaflet")
                     else:
@@ -3059,8 +3069,8 @@ with tab_global_map:
                         config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
                         key="map_firms_global",
                     )
-                if map_view in {"Thermal vision", "Heat + points"}:
-                    st.caption(f"Data source: {firms_display_source}. Thermal vision colors supported clusters of NASA FIRMS fire detections by relative satellite fire radiative power (FRP), not ground temperature or fire perimeters. Empty areas have no plotted detections; isolated detections remain visible on the standard map.")
+                if map_view == "Soft heat map":
+                    st.caption(f"Data source: {firms_display_source}. The soft heat coloring shows relative satellite fire radiative power (FRP) around supported clusters. It does not show ground temperature or fire perimeters.")
                 else:
                     st.caption(f"Data source: {firms_display_source}. NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
@@ -3144,8 +3154,7 @@ with tab_global_map:
                 if map_view != "Globe / flat map":
                     popup = [c for c in ["region", color, "latest_risk"] if c and c in map_df.columns]
                     render_leaflet_points(map_df, color_by=color, popup_columns=popup, height=560,
-                                          thermal=map_view in {"Thermal vision", "Heat + points"},
-                                      show_points_on_thermal=map_view == "Heat + points",
+                                          thermal=map_view == "Soft heat map",
                                           key="map_local_global_leaflet")
                 else:
                     fig = scatter_geo_safe(
@@ -3350,13 +3359,12 @@ with tab_local_hazards:
 
                 if not map_df.empty:
                     map_view = st.radio(
-                        "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision", "Heat + points"],
-                        horizontal=True, key=f"local_{col}_map_view",
+                        "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
+                        index=2, horizontal=True, key=f"local_{col}_map_view",
                     )
                     if map_view != "Globe / flat map":
                         render_leaflet_points(map_df, color_by=col, popup_columns=["region", col],
-                                              height=560, thermal=map_view in {"Thermal vision", "Heat + points"},
-                                      show_points_on_thermal=map_view == "Heat + points",
+                                              height=560, thermal=map_view == "Soft heat map",
                                               key=f"map_local_hazard_{col}_leaflet")
                     else:
                         map_style = st.radio(
@@ -3684,6 +3692,58 @@ with tab_atmosphere:
     else:
         st.info("Search for a city above to fetch its air-quality estimate.")
 
+    aqi_globe_rows = []
+    saved_comparison = st.session_state.get("air_quality_comparison")
+    if isinstance(saved_comparison, pd.DataFrame) and not saved_comparison.empty:
+        for _, compared_place in saved_comparison.iterrows():
+            coordinates = aqi_location_lookup.get(compared_place.get("Place"))
+            score = pd.to_numeric(pd.Series([compared_place.get("U.S. AQI")]), errors="coerce").iloc[0]
+            if coordinates and pd.notna(score):
+                aqi_globe_rows.append({
+                    "City": compared_place["Place"], "lat": coordinates[0], "lon": coordinates[1],
+                    "U.S. AQI": float(score), "AQI number": f"{float(score):.0f}",
+                })
+    if selected_aqi_location and saved_air_quality:
+        current_globe_aqi = saved_air_quality.get("data", {}).get("current", {}).get("us_aqi")
+        if current_globe_aqi is not None and not pd.isna(current_globe_aqi):
+            aqi_globe_rows = [row for row in aqi_globe_rows if row["City"] != selected_aqi_location]
+            aqi_globe_rows.append({
+                "City": selected_aqi_location, "lat": float(aqi_lat), "lon": float(aqi_lon),
+                "U.S. AQI": float(current_globe_aqi), "AQI number": f"{float(current_globe_aqi):.0f}",
+            })
+
+    st.markdown("### 🌍 AQI globe")
+    st.caption("Numbered dots are shown only for cities you have searched or compared. Values are modeled U.S. AQI estimates, not street-monitor readings.")
+    if aqi_globe_rows:
+        aqi_globe_frame = pd.DataFrame(aqi_globe_rows)
+        aqi_globe = px.scatter_geo(
+            aqi_globe_frame, lat="lat", lon="lon", color="U.S. AQI", text="AQI number",
+            hover_name="City", hover_data={"lat": False, "lon": False, "U.S. AQI": ":.0f", "AQI number": False},
+            color_continuous_scale=["#22c55e", "#eab308", "#f97316", "#ef4444", "#9333ea"],
+            range_color=[0, 200], projection="orthographic", height=460,
+        )
+        aqi_globe.update_traces(
+            marker={"size": 26, "line": {"color": "#ffffff", "width": 1.5}},
+            textposition="middle center", textfont={"color": "#102033", "size": 10},
+        )
+        aqi_globe.update_geos(
+            showland=True, landcolor="#e9e5dc", showocean=True, oceancolor="#a9d3df",
+            showcountries=True, countrycolor="#a9bcc5", showcoastlines=True,
+            coastlinecolor="#78909c", bgcolor="rgba(0,0,0,0)",
+        )
+        aqi_globe.update_layout(
+            margin={"l": 0, "r": 0, "t": 10, "b": 0},
+            paper_bgcolor="rgba(0,0,0,0)",
+            coloraxis_colorbar={"title": "U.S. AQI"},
+        )
+        st.plotly_chart(
+            aqi_globe, width="stretch",
+            config={"responsive": True, "displaylogo": False, "scrollZoom": True},
+            key="air_quality_numbered_globe",
+        )
+    else:
+        st.info("Search for a city and load its AQI, or compare places, to add numbered cities to the globe.")
+
     st.caption("This is a model-based estimate, not a ground-monitor reading. Forecast coverage is about 11 km in Europe and 45 km globally. Sources: [Open-Meteo Air Quality API](https://open-meteo.com/en/docs/air-quality-api) and [Copernicus Atmosphere Monitoring Service (CAMS)](https://atmosphere.copernicus.eu/).")
 
     st.markdown(
@@ -3790,15 +3850,14 @@ with tab_live_events:
         mapped_events = scoped_events.dropna(subset=["lat", "lon"])
         if not mapped_events.empty:
             map_view = st.radio(
-                "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision", "Heat + points"],
-                horizontal=True, key="live_events_map_view",
+                "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
+                index=2, horizontal=True, key="live_events_map_view",
             )
             if map_view != "Globe / flat map":
                 render_leaflet_points(mapped_events, color_by="hazard", category_colors=HAZARD_COLORS,
                                       popup_columns=["title", "place", "hazard", "categories", "date"], height=460,
-                                      thermal=map_view in {"Thermal vision", "Heat + points"},
-                                      show_points_on_thermal=map_view == "Heat + points",
-                                      key="map_eonet_live_events_leaflet")
+                                      thermal=map_view == "Soft heat map",
+                                                                            key="map_eonet_live_events_leaflet")
             else:
                 map_style = st.radio("Map style", ["Globe", "Flat world"], horizontal=True, key="live_events_map_style")
                 projection = "orthographic" if map_style == "Globe" else "natural earth"
@@ -3854,14 +3913,13 @@ with tab_live_fire:
             st.info("No fire detections are in the selected countries.")
 
         map_view = st.radio(
-            "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision", "Heat + points"],
-            horizontal=True, key="firms_map_view",
+            "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
+            index=2, horizontal=True, key="firms_map_view",
         )
         if map_view != "Globe / flat map":
-            if map_view in {"Thermal vision", "Heat + points"}:
+            if map_view == "Soft heat map":
                 render_leaflet_points(firms_map_df, color_by="frp", height=460, point_limit=2000,
                                       thermal=True,
-                                      show_points_on_thermal=map_view == "Heat + points",
                                       pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
                                       key="map_firms_live_thermal_leaflet")
             else:
@@ -3878,8 +3936,8 @@ with tab_live_fire:
                 config={"scrollZoom": True, "responsive": True, "displayModeBar": True, "displaylogo": False},
                 key="map_firms_live",
             )
-        if map_view in {"Thermal vision", "Heat + points"}:
-            style_label = "Heat + points" if map_view == "Heat + points" else "Thermal vision"
+        if map_view == "Soft heat map":
+            style_label = "Soft heat map"
             st.caption(f"{style_label} shows supported clusters of NASA FIRMS fire detections by relative satellite fire radiative power (FRP), not ground temperature or fire perimeters.")
         else:
             st.caption("NASA FIRMS detections are shown as orange/red points. A detection does not confirm a wildfire; use the table for the full feed.")
