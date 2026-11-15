@@ -6,6 +6,7 @@ import subprocess
 import time
 import datetime
 import smtplib
+import ssl
 import importlib.util
 from email.message import EmailMessage
 import json
@@ -2396,8 +2397,9 @@ def get_alert_secret(name, default=""):
         direct_value = st.secrets.get(name)
         if direct_value:
             return str(direct_value).strip()
-        twilio_settings = st.secrets.get("twilio", {})
-        return str(twilio_settings.get(name, default)).strip()
+        section_name = "twilio" if name.startswith("TWILIO_") else "smtp" if name.startswith("SMTP_") else ""
+        section_settings = st.secrets.get(section_name, {}) if section_name else {}
+        return str(section_settings.get(name, default)).strip()
     except Exception:
         return default
 
@@ -2461,26 +2463,41 @@ def check_phone_verification(phone_number, code):
         return False, "Could not verify the code. It may have expired, or the Twilio settings may need checking."
 
 
-def send_aqi_email(recipient, subject, body):
+def send_alert_email(recipient, subject, body):
     host = get_alert_secret("SMTP_HOST")
     username = get_alert_secret("SMTP_USER")
     password = get_alert_secret("SMTP_PASSWORD")
     sender = get_alert_secret("SMTP_FROM", username)
     if not all([host, username, password, sender]):
-        return False, "Add SMTP_HOST, SMTP_USER, SMTP_PASSWORD, and SMTP_FROM to app secrets to enable email."
+        return False, "Email is not configured. Add SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, and SMTP_FROM to Streamlit Secrets."
     message = EmailMessage()
     message["From"] = sender
     message["To"] = recipient
     message["Subject"] = subject
     message.set_content(body)
     try:
-        with smtplib.SMTP(host, int(get_alert_secret("SMTP_PORT", "587")), timeout=15) as server:
-            server.starttls()
+        port = int(get_alert_secret("SMTP_PORT", "587"))
+        use_ssl = get_alert_secret("SMTP_USE_SSL", "true" if port == 465 else "false").lower() in {"1", "true", "yes", "on"}
+        server_type = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
+        with server_type(host, port, timeout=20) as server:
+            if not use_ssl:
+                server.starttls(context=ssl.create_default_context())
             server.login(username, password)
             server.send_message(message)
         return True, None
+    except smtplib.SMTPAuthenticationError:
+        return False, "SMTP login was rejected. Check the username and password; some providers require an app-specific password."
+    except smtplib.SMTPRecipientsRefused:
+        return False, "The mail provider rejected the recipient address. Check the destination email."
+    except (ValueError, OSError, smtplib.SMTPException) as exc:
+        return False, f"Email delivery failed ({type(exc).__name__}). Check the SMTP host, port, and TLS setting."
     except Exception as exc:
         return False, f"Email delivery failed ({type(exc).__name__})."
+
+
+def send_aqi_email(recipient, subject, body):
+    """Backwards-compatible name for the shared SMTP email sender."""
+    return send_alert_email(recipient, subject, body)
 
 
 def send_aqi_sms(recipient, body):
@@ -2693,6 +2710,20 @@ with st.sidebar:
         value=True,
         help="A popup appears when a live FIRMS refresh includes detections not seen in the previous refresh. The first live load sets the baseline."
     )
+    fire_email_enabled = st.checkbox(
+        "Email me when new fires are detected",
+        key="fire_alert_email_enabled",
+        help="Sends one email per refresh batch of new FIRMS detections. Requires SMTP settings in app secrets."
+    )
+    fire_email_to = ""
+    if fire_email_enabled:
+        fire_email_to = st.text_input(
+            "Fire alert email address",
+            placeholder="you@example.com",
+            key="fire_alert_email_to",
+        ).strip()
+        if not fire_email_to:
+            st.caption("Enter an email address to receive fire alerts.")
     fire_sms_enabled = st.checkbox(
         "Text me when new fires are detected",
         key="fire_alert_sms_enabled",
@@ -2707,6 +2738,19 @@ with st.sidebar:
         ).strip()
     if st.button("Send test popup", help="Shows a sample notification without contacting NASA or changing your alert baseline."):
         st.toast("🔥 Test popup: fire alerts are working.", icon="🔥")
+    if fire_email_enabled and st.button("Send test fire email", key="test_fire_email"):
+        if not fire_email_to:
+            st.warning("Enter the email address that should receive the test.")
+        else:
+            sent, error = send_alert_email(
+                fire_email_to,
+                "Earth Emergency Command · test fire alert",
+                "This is a test. Email alerts for new NASA FIRMS detections are connected.",
+            )
+            if sent:
+                st.success(f"Test fire email sent to {fire_email_to}.")
+            else:
+                st.error(error)
     if fire_sms_enabled and st.button("Send test fire text", key="test_fire_sms"):
         test_phone = normalize_phone_number(fire_alert_phone)
         if not test_phone:
@@ -2930,6 +2974,21 @@ if firms_is_live and firms_df is not None:
                     f"🔥 {len(new_detections):,} new fire detection(s) in {scope_label}. Latest location: {location}.",
                     icon="🔥",
                 )
+            if fire_email_enabled:
+                if fire_email_to:
+                    fire_message = (
+                        f"Earth Emergency Command: {len(new_detections):,} new FIRMS fire detection(s) "
+                        f"in {scope_label}. Latest location: {location}. Detections are unconfirmed."
+                    )
+                    delivered, delivery_error = send_alert_email(
+                        fire_email_to, "New NASA FIRMS fire detections", fire_message
+                    )
+                    if delivered:
+                        st.toast("✉️ Fire alert email sent.", icon="✉️")
+                    else:
+                        st.warning(delivery_error)
+                else:
+                    st.warning("New fires were detected, but the fire alert email address is missing.")
             if fire_sms_enabled:
                 sms_phone = normalize_phone_number(fire_alert_phone)
                 if sms_phone:
@@ -3747,9 +3806,23 @@ with tab_atmosphere:
             st.checkbox("Text alert", key="aqi_alert_sms_enabled")
             st.text_input("Phone number (include country code)", placeholder="+1 555 123 4567", key="aqi_alert_phone")
         st.caption("AQI reminders follow the places in your watchlist worldwide. The map’s country filter only affects maps and new-fire alerts.")
+        if st.button("Send test AQI email", key="test_aqi_email"):
+            test_recipient = st.session_state.get("aqi_alert_email", "").strip()
+            if not test_recipient:
+                st.warning("Enter the email address that should receive AQI alerts.")
+            else:
+                sent, error = send_alert_email(
+                    test_recipient,
+                    "Earth Emergency Command · test AQI alert",
+                    "This is a test. AQI email reminders are connected.",
+                )
+                if sent:
+                    st.success(f"Test AQI email sent to {test_recipient}.")
+                else:
+                    st.error(error)
         with st.expander("One-time provider setup"):
-            st.code('SMTP_HOST = "..."\nSMTP_PORT = 587\nSMTP_USER = "..."\nSMTP_PASSWORD = "..."\nSMTP_FROM = "..."\n\n[twilio]\nTWILIO_ACCOUNT_SID = "..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "..."\nTWILIO_VERIFY_SERVICE_SID = "VA..."', language="toml")
-            st.caption("Use Twilio messaging settings for text alerts and a Twilio Verify Service SID for phone sign-in. Store credentials in Streamlit secrets or environment variables. Never paste passwords here.")
+            st.code('[smtp]\nSMTP_HOST = "smtp.example.com"\nSMTP_PORT = 587\nSMTP_USER = "you@example.com"\nSMTP_PASSWORD = "provider app password"\nSMTP_FROM = "you@example.com"\nSMTP_USE_SSL = false\n\n[twilio]\nTWILIO_ACCOUNT_SID = "AC..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "+15551234567"\nTWILIO_VERIFY_SERVICE_SID = "VA..."', language="toml")
+            st.caption("Add the [smtp] block to Manage app → Settings → Secrets. Use port 587 with SMTP_USE_SSL = false (STARTTLS), or port 465 with SMTP_USE_SSL = true. The username, password, and From address must be valid for your email provider; Gmail generally requires an App Password. Credentials stay in Streamlit Secrets, never in GitHub. Twilio settings are only for text alerts and phone sign-in.")
 
     alerts_active = (
         st.session_state.get("aqi_alert_email_enabled") and st.session_state.get("aqi_alert_email", "").strip()
@@ -3777,11 +3850,19 @@ with tab_atmosphere:
                 continue
             alert_message = f"AQI alert: {place_label} is {us_aqi_category(monitor_score)} (U.S. AQI {int(float(monitor_score))})."
             delivered = False
+            alert_errors = []
             if st.session_state.get("aqi_alert_email_enabled"):
-                delivered, _ = send_aqi_email(st.session_state.get("aqi_alert_email", "").strip(), "Air quality alert", alert_message)
+                email_delivered, email_error = send_aqi_email(st.session_state.get("aqi_alert_email", "").strip(), "Air quality alert", alert_message)
+                delivered = delivered or email_delivered
+                if email_error:
+                    alert_errors.append(email_error)
             if st.session_state.get("aqi_alert_sms_enabled"):
-                sms_delivered, _ = send_aqi_sms(st.session_state.get("aqi_alert_phone", "").strip(), alert_message)
+                sms_delivered, sms_error = send_aqi_sms(st.session_state.get("aqi_alert_phone", "").strip(), alert_message)
                 delivered = delivered or sms_delivered
+                if sms_error:
+                    alert_errors.append(sms_error)
+            if alert_errors:
+                st.warning(" ".join(alert_errors))
             alerted_places[place_label] = delivered
     elif alerts_active and followed_places and not auto_refresh:
         st.caption("Turn on Auto refresh in the sidebar to check AQI reminders every five minutes.")

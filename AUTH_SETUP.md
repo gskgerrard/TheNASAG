@@ -1,5 +1,21 @@
 # Optional account sign-in
 
+## AQI and fire email alerts
+
+Email delivery uses the SMTP server for the sender account. Add the provider settings in Streamlit Cloud → **Manage app → Settings → Secrets**; do not put credentials in GitHub. The app accepts a `[smtp]` secrets section or the same `SMTP_*` keys at the top level:
+
+```toml
+[smtp]
+SMTP_HOST = "smtp.example.com"
+SMTP_PORT = 587
+SMTP_USER = "you@example.com"
+SMTP_PASSWORD = "provider app password"
+SMTP_FROM = "you@example.com"
+SMTP_USE_SSL = false
+```
+
+Port 587 uses STARTTLS by default; port 465 uses SSL (or set `SMTP_USE_SSL = true`). Use the SMTP host and an app-specific password required by your mail provider. In the dashboard, send a test AQI email or test fire email before enabling alerts. AQI alert emails are sent when a watched place reaches the threshold during a comparison or while Auto refresh is active. New-fire emails are sent after the initial live FIRMS snapshot, when a later refresh finds new detections.
+
 The dashboard uses Streamlit's OpenID Connect sign-in. **Log in** at the bottom-right opens the sign-in pop-up; the same option is under **Settings & account** in the sidebar. Sign-in is optional, and the dashboard stays public when nobody is signed in.
 
 ## 1. Create a Google sign-in client
