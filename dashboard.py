@@ -47,6 +47,7 @@ except ImportError:
 # ============================================================
 
 ROOT_DIR = Path(__file__).resolve().parent
+HOME_ART_PATH = ROOT_DIR / "assets" / "earthguard-home.png"
 DATA_DIR = str(ROOT_DIR / "data")
 OUTPUT_DIR = str(ROOT_DIR / "output")
 COORD_PATH = str(ROOT_DIR / "data" / "coordinates.csv")
@@ -2440,6 +2441,11 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
+if HOME_ART_PATH.is_file():
+    art_left, art_center, art_right = st.columns([1, 2, 1])
+    with art_center:
+        st.image(str(HOME_ART_PATH), width="stretch", caption="EarthGuard · Detect · Prevent · Protect")
 
 with st.container(key="floating_login"):
     account_button_label = "👤 Account" if account_is_logged_in() else "👤 Log in"
