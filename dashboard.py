@@ -733,13 +733,10 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
     # thousands of detections. Bins are used only for counts; points stay at
     # their satellite-reported coordinates, so no grid is drawn on the map.
     support_step = max(0.01, (float(pixel_size_meters) / 111_195.0) * 3.0)
-    # Separate satellite passes at the same spot are useful records, but must
-    # not make one isolated heat source look like a large, confirmed fire.
-    unique_observation = [column for column in ("lat", "lon", "date", "acq_time") if column in data_frame.columns]
-    full_work = data_frame[unique_observation].copy()
+    full_work = data_frame[["lat", "lon"]].copy()
     full_work["lat"] = pd.to_numeric(full_work["lat"], errors="coerce")
     full_work["lon"] = pd.to_numeric(full_work["lon"], errors="coerce")
-    full_work = full_work.dropna(subset=["lat", "lon"]).drop_duplicates()
+    full_work = full_work.dropna(subset=["lat", "lon"])
     full_work["__lat_cell"] = np.floor(full_work["lat"] / support_step).astype("int32")
     full_work["__lon_cell"] = np.floor(full_work["lon"] / support_step).astype("int32")
     bin_counts = full_work.groupby(["__lat_cell", "__lon_cell"], sort=False).size()
@@ -1104,8 +1101,8 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const heatCanvas=document.createElement('canvas');heatCanvas.width=canvas.width;heatCanvas.height=canvas.height;const heatCtx=heatCanvas.getContext('2d');heatCtx.setTransform(dpr,0,0,dpr,0,0);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
    heatCtx.globalCompositeOperation='source-over';
-  const cellRadius=cell=>{{const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),nativePixel=cell.pixel_size_meters||thermalRadiusMeters,physicalRadius=nativePixel/metersPerPixel,supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=fireSurface?Math.max(1.5,physicalRadius*.6*supportScale):Math.max(12,physicalRadius*3.5);return fireSurface?Math.min(90,baseRadius):Math.min(30,baseRadius)}};
-  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=heatCtx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');heatCtx.globalAlpha=cell.strength*(fireSurface ? (cell.support > 1 ? 0.8 : 0.28) : 1);heatCtx.fillStyle=grad;heatCtx.beginPath();heatCtx.arc(p.x,p.y,r,0,Math.PI*2);heatCtx.fill()}}heatCtx.globalAlpha=1;heatCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter=fireSurface?'blur(2px)':'blur(5px)';ctx.drawImage(heatCanvas,0,0);ctx.filter='none';ctx.restore()}}
+  const cellRadius=cell=>{{const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),nativePixel=cell.pixel_size_meters||thermalRadiusMeters,physicalRadius=nativePixel/metersPerPixel,supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.max(fireSurface?7:12,physicalRadius*3.5*supportScale);return fireSurface?Math.min(90,16+zoom*4,baseRadius):Math.min(30,baseRadius)}};
+  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=heatCtx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');heatCtx.globalAlpha=cell.strength*(fireSurface ? 0.7 : 1);heatCtx.fillStyle=grad;heatCtx.beginPath();heatCtx.arc(p.x,p.y,r,0,Math.PI*2);heatCtx.fill()}}heatCtx.globalAlpha=1;heatCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter='blur(5px)';ctx.drawImage(heatCanvas,0,0);ctx.filter='none';ctx.restore()}}
  }});
  new ThermalSurface().addTo(map);
 }}
