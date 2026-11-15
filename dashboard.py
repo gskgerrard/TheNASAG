@@ -2425,13 +2425,23 @@ ensure_coordinates_file(registry)
 
 
 # ============================================================
-# HOME BRANDING
+# HERO
 # ============================================================
 
+st.markdown(
+    """
+    <div class="hero">
+        <h1>Earth Emergency Command</h1>
+        <p>NASA satellite data, live fire detections, and environmental monitoring in one place.</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
 if HOME_ART_PATH.is_file():
-    art_left, art_center, art_right = st.columns([1, 1, 1])
+    art_left, art_center, art_right = st.columns([1, 2, 1])
     with art_center:
-        st.image(str(HOME_ART_PATH), width=360)
+        st.image(str(HOME_ART_PATH), width="stretch")
 
 with st.container(key="floating_login"):
     account_button_label = "👤 Account" if account_is_logged_in() else "👤 Log in"
