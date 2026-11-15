@@ -418,7 +418,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 
 .home-earth {
     text-align: center;
-    font-size: 40px;
+    font-size: 48px;
     line-height: 1;
     opacity: 0.8;
 }
@@ -518,7 +518,7 @@ label *,
     }
     .st-key-home_hero h1 { font-size: 28px; }
     .st-key-home_hero p { font-size: 15px; }
-    .home-earth { font-size: 32px; }
+    .home-earth { font-size: 38px; }
     h1 { font-size: 1.65rem !important; }
     h2 { font-size: 1.35rem !important; }
     h3 { font-size: 1.1rem !important; }
