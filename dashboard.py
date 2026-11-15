@@ -692,67 +692,51 @@ def sample_map_points(data_frame, max_points=2000, rank_by=None):
     return pd.concat([strongest, sampled]).drop_duplicates().copy()
 
 
-def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_cells=2500):
-    """Aggregate detections into a lightweight, zoom-scaled thermal surface."""
+def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_points=2500):
+    """Build a smooth surface from sampled source coordinates, without grid-snapping points."""
     if data_frame is None or data_frame.empty:
         return [], 0, "nearby point density"
 
-    # Merge neighboring sensor pixels into the broad translucent clusters
-    # used by the original map style.
-    step_degrees = max(0.01, (float(pixel_size_meters) / 111_195.0) * 3.0)
-    numeric = pd.to_numeric(data_frame[value_column], errors="coerce") if value_column in data_frame.columns else pd.Series(np.nan, index=data_frame.index)
+    frame = sample_map_points(data_frame, max_points=max_points, rank_by=value_column)
+    work = frame[["lat", "lon"]].copy()
+    numeric = (
+        pd.to_numeric(frame[value_column], errors="coerce")
+        if value_column and value_column in frame.columns
+        else pd.Series(np.nan, index=frame.index)
+    )
     has_measurement = numeric.notna().any()
-    work = data_frame[["lat", "lon"]].copy()
     work["__value"] = numeric if has_measurement else 1.0
+
+    # Use coarse bins only to estimate support; every heat spot remains at
+    # its real input coordinate, preventing visible latitude/longitude grids.
+    step_degrees = max(0.01, (float(pixel_size_meters) / 111_195.0) * 3.0)
     work["__lat_cell"] = np.floor(work["lat"] / step_degrees)
     work["__lon_cell"] = np.floor(work["lon"] / step_degrees)
-    while work.groupby(["__lat_cell", "__lon_cell"], sort=False).ngroups > max_cells:
-        step_degrees *= 1.5
-        work["__lat_cell"] = np.floor(work["lat"] / step_degrees)
-        work["__lon_cell"] = np.floor(work["lon"] / step_degrees)
-
-    aggregate = "sum" if value_column == "frp" else "mean"
-    cells = (
-        work.groupby(["__lat_cell", "__lon_cell"], as_index=False, sort=False)
-        .agg(value=("__value", aggregate), detections=("__value", "size"))
-    )
-    # Include a cell when its immediate 3x3 neighborhood has multiple
-    # detections. This bridges adjacent pixel cells without painting isolated
-    # singletons as an area.
-    cell_rows = list(cells[["__lat_cell", "__lon_cell", "detections"]].itertuples(index=False, name=None))
-    cell_counts = {(int(lat_cell), int(lon_cell)): int(count) for lat_cell, lon_cell, count in cell_rows}
-    cells["__local_support"] = [
-        sum(cell_counts.get((int(lat_cell) + dlat, int(lon_cell) + dlon), 0)
+    bin_counts = work.groupby(["__lat_cell", "__lon_cell"], sort=False).size()
+    support = [
+        sum(int(bin_counts.get((int(lat_cell) + dlat, int(lon_cell) + dlon), 0))
             for dlat in (-1, 0, 1) for dlon in (-1, 0, 1))
-        for lat_cell, lon_cell, _ in cell_rows
+        for lat_cell, lon_cell in work[["__lat_cell", "__lon_cell"]].itertuples(index=False, name=None)
     ]
-    # Isolated detections remain visible as dots, without implying a fire area.
-    cells = cells.loc[cells["__local_support"] >= 2].copy()
-    if cells.empty:
-        return [], 0, "cluster intensity"
-    cells["lat"] = ((cells["__lat_cell"] + 0.5) * step_degrees).clip(-90, 90)
-    cells["lon"] = ((cells["__lon_cell"] + 0.5) * step_degrees).clip(-180, 180)
-    if not has_measurement:
-        cells["value"] = cells["detections"]
-    if value_column == "frp" or not has_measurement:
-        cells["value"] = np.log1p(cells["value"].clip(lower=0))
 
-    low = float(cells["value"].quantile(0.02))
-    high = float(cells["value"].quantile(0.98))
+    values = work["__value"].fillna(0).clip(lower=0)
+    if value_column == "frp" or not has_measurement:
+        values = np.log1p(values)
+    low = float(values.quantile(0.02))
+    high = float(values.quantile(0.98))
     stops = [(34, 197, 94), (132, 204, 22), (234, 179, 8), (249, 115, 22), (239, 68, 68)]
     records = []
-    render_cells = cells.rename(columns={"__local_support": "local_support"})
-    for row in render_cells.itertuples(index=False):
-        fraction = 0.5 if high <= low else min(1.0, max(0.0, (float(row.value) - low) / (high - low)))
+    for (_, row), local_support, value in zip(work.iterrows(), support, values):
+        fraction = 0.5 if high <= low else min(1.0, max(0.0, (float(value) - low) / (high - low)))
         segment = min(len(stops) - 2, int(fraction * (len(stops) - 1)))
         blend = fraction * (len(stops) - 1) - segment
         color = "#" + "".join(
             f"{round(a + (b - a) * blend):02x}" for a, b in zip(stops[segment], stops[segment + 1])
         )
         records.append({
-            "lat": float(row.lat), "lon": float(row.lon), "color": color,
+            "lat": float(row["lat"]), "lon": float(row["lon"]), "color": color,
             "strength": 0.18 + 0.32 * fraction,
-            "support": int(row.local_support),
+            "support": int(local_support),
         })
     records.sort(key=lambda record: record["strength"])
     if value_column == "frp":
@@ -763,7 +747,7 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
         basis = "local proxy/risk score (relative)"
     else:
         basis = "selected numeric value"
-    return records, max(pixel_size_meters / 2, step_degrees * 111_195 * 0.72), basis
+    return records, max(float(pixel_size_meters) * 0.75, 350), basis
 
 
 def make_thermal_fire_map(data_frame, projection="orthographic", height=600, focus_bounds=None):
@@ -1097,7 +1081,7 @@ const box=document.createElement('div');for(const [label,value] of Object.entrie
 if(!Object.keys(item.details).length){{const line=document.createElement('div');line.textContent=item.lat.toFixed(3)+', '+item.lon.toFixed(3);box.appendChild(line)}}marker.bindPopup(box)}}
 </script></body></html>""".replace(
         "__NOTE__",
-        (f"Soft heat map · green → red = {surface_basis} · no supported points = transparent · {len(surface_rows):,} supported areas" if thermal
+        (f"Soft heat map · green → red = {surface_basis} · no supported points = transparent · {len(surface_rows):,} mapped locations" if thermal
          else f"{len(frame):,} of {total:,} mapped · drag to pan · pinch or use +/− to zoom")
     ).replace(
         "__LEGEND__",
