@@ -1086,8 +1086,8 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const heatCanvas=document.createElement('canvas');heatCanvas.width=canvas.width;heatCanvas.height=canvas.height;const heatCtx=heatCanvas.getContext('2d');heatCtx.setTransform(dpr,0,0,dpr,0,0);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
    heatCtx.globalCompositeOperation='source-over';
-  const cellRadius=cell=>{{const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.min(fireSurface?24:30,Math.max(fireSurface?7:12,physicalRadius*3.5*supportScale));return fireSurface?baseRadius*.7:baseRadius}};
-  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=heatCtx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');heatCtx.globalAlpha=cell.strength;heatCtx.fillStyle=grad;heatCtx.beginPath();heatCtx.arc(p.x,p.y,r,0,Math.PI*2);heatCtx.fill()}}heatCtx.globalAlpha=1;heatCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter='blur(5px)';ctx.drawImage(heatCanvas,0,0);ctx.filter='none';ctx.restore()}}
+  const cellRadius=cell=>{{const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.max(fireSurface?7:12,physicalRadius*3.5*supportScale);return fireSurface?Math.min(90,16+zoom*4,baseRadius):Math.min(30,baseRadius)}};
+  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=heatCtx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');heatCtx.globalAlpha=cell.strength*(fireSurface ? 0.7 : 1);heatCtx.fillStyle=grad;heatCtx.beginPath();heatCtx.arc(p.x,p.y,r,0,Math.PI*2);heatCtx.fill()}}heatCtx.globalAlpha=1;heatCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter='blur(5px)';ctx.drawImage(heatCanvas,0,0);ctx.filter='none';ctx.restore()}}
  }});
  new ThermalSurface().addTo(map);
 }}
@@ -2570,12 +2570,17 @@ with st.sidebar:
     else:
         st.caption("FIRMS MAP_KEY loaded from environment or Streamlit secrets.")
 
+    firms_source_options = [
+        "All NRT feeds (recommended)",
+        "VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT",
+    ]
     firms_source = st.selectbox(
         "Satellite feed",
-        ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT"],
-        help="Near real-time active fire detections from NASA FIRMS."
+        firms_source_options,
+        key="firms_satellite_feed_v2",
+        help="Combining all near-real-time sensors helps catch detections missed by one satellite pass."
     )
-    firms_days = st.slider("FIRMS lookback days", 1, 5, 1)
+    firms_days = st.slider("FIRMS lookback days", 1, 5, 2, key="firms_lookback_days_v2")
     include_low_confidence = st.checkbox(
         "Include low-confidence detections",
         value=False,
@@ -2695,39 +2700,39 @@ if firms_url:
     if firms_df is not None:
         firms_error = "Showing the configured FIRMS CSV URL; freshness depends on that source."
 elif firms_key:
-    firms_df, firms_error = fetch_firms_api(firms_key, firms_source, firms_days)
-    firms_source_used = firms_source
-    if firms_df is None and firms_error == "NASA FIRMS returned no fire detections for this period.":
-        other_sources = [
-            source for source in [
-                "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "VIIRS_SNPP_NRT", "MODIS_NRT"
-            ]
-            if source != firms_source
-        ]
-        empty_sources = [firms_source]
-        for alternate_source in other_sources:
-            alternate_df, alternate_error = fetch_firms_api(
-                firms_key, alternate_source, firms_days
-            )
-            if alternate_df is not None:
-                firms_df = alternate_df
-                firms_source_used = alternate_source
-                firms_error = (
-                    f"{firms_source} returned no detections; showing live results from "
-                    f"{alternate_source} for the last {firms_days} days."
-                )
-                break
-            if alternate_error == "NASA FIRMS returned no fire detections for this period.":
-                empty_sources.append(alternate_source)
-            elif alternate_error:
-                firms_error = alternate_error
-                break
-        else:
-            firms_error = (
-                "NASA FIRMS returned no detections from the selected or alternate "
-                f"feeds ({', '.join(empty_sources)}) for the last {firms_days} days. "
-                "Try another lookback period or check the feed again later."
-            )
+    all_nrt_sources = ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT"]
+    sources_to_fetch = all_nrt_sources if firms_source == "All NRT feeds (recommended)" else [firms_source]
+    available_frames = []
+    available_sources = []
+    source_errors = []
+    for nrt_source in sources_to_fetch:
+        source_frame, source_error = fetch_firms_api(firms_key, nrt_source, firms_days)
+        if source_frame is not None and not source_frame.empty:
+            source_frame = source_frame.copy()
+            source_frame["__feed_source"] = nrt_source
+            available_frames.append(source_frame)
+            available_sources.append(nrt_source)
+        elif source_error and source_error != "NASA FIRMS returned no fire detections for this period.":
+            source_errors.append(f"{nrt_source}: {source_error}")
+
+    firms_source_used = ", ".join(available_sources)
+    if available_frames:
+        firms_df = pd.concat(available_frames, ignore_index=True, sort=False)
+        dedupe_columns = [column for column in ("lat", "lon", "date", "acq_time", "frp") if column in firms_df.columns]
+        if len(dedupe_columns) >= 3:
+            firms_df = firms_df.drop_duplicates(subset=dedupe_columns).reset_index(drop=True)
+        firms_error = (
+            f"Combined NASA FIRMS detections from {firms_source_used} for the last {firms_days} days."
+        )
+        if source_errors:
+            firms_error += " Some sensor feeds did not respond: " + " · ".join(source_errors)
+    else:
+        firms_df = None
+        firms_source_used = firms_source
+        firms_error = (
+            "No detections were returned from the selected NASA FIRMS feeds "
+            f"for the last {firms_days} days. " + (" ".join(source_errors) if source_errors else "Try a longer lookback period.")
+        )
     firms_is_live = firms_df is not None
 else:
     firms_df, firms_error = None, (
