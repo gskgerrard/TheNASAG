@@ -3914,18 +3914,32 @@ with tab_atmosphere:
             display_unit = unit or current_units.get(variable, "")
             return f"{number} {display_unit}".strip()
 
-        aq1, aq2, aq3, aq4 = st.columns(4)
-        aq1.metric("U.S. AQI", aqi_metric("us_aqi", "U.S. AQI"), category)
-        aq2.metric("European AQI", aqi_metric("european_aqi", "European AQI"))
-        aq3.metric("PM₂.₅", aqi_metric("pm2_5", "PM₂.₅"))
-        aq4.metric("PM₁₀", aqi_metric("pm10", "PM₁₀"))
-
-        st.markdown("#### Other pollutants")
-        ap1, ap2, ap3, ap4 = st.columns(4)
-        ap1.metric("Ozone (O₃)", aqi_metric("ozone", "Ozone"))
-        ap2.metric("Nitrogen dioxide (NO₂)", aqi_metric("nitrogen_dioxide", "NO₂"))
-        ap3.metric("Sulfur dioxide (SO₂)", aqi_metric("sulphur_dioxide", "SO₂"))
-        ap4.metric("Carbon monoxide (CO)", aqi_metric("carbon_monoxide", "CO"))
+        pm25_value = aqi_metric("pm2_5", "PM₂.₅", "µg/m³")
+        aqi_value = aqi_metric("us_aqi", "U.S. AQI")
+        category_color = "#f97316" if category == "Unhealthy for sensitive groups" else "#ef4444" if category in {"Unhealthy", "Very unhealthy", "Hazardous"} else "#22c55e" if category == "Good" else "#eab308"
+        st.markdown(
+            f"""
+            <div style="max-width:560px; overflow:hidden; border-radius:18px; background:#fff; color:#402b20; box-shadow:0 10px 28px rgba(15,23,42,.24);">
+              <div style="padding:16px; background:{category_color}; color:#402b20;">
+                <div style="display:flex; align-items:center; gap:16px;">
+                  <div style="min-width:64px; padding:10px 8px; border-radius:8px; background:rgba(180,75,0,.25); text-align:center;">
+                    <div style="font-size:22px; font-weight:700; line-height:1.1;">{aqi_value}</div>
+                    <div style="font-size:11px;">US AQI</div>
+                  </div>
+                  <div style="font-size:18px; font-weight:600;">{category}</div>
+                </div>
+                <div style="display:flex; justify-content:space-between; gap:12px; margin-top:12px; padding-top:10px; border-top:1px solid rgba(80,40,20,.18); font-size:15px;">
+                  <span>Main pollutant: <b>PM2.5</b></span><b>{pm25_value}</b>
+                </div>
+              </div>
+              <div style="display:flex; justify-content:space-between; gap:12px; padding:11px 18px; color:#344054; font-size:13px;">
+                <span>European AQI <b>{aqi_metric('european_aqi', 'European AQI')}</b></span>
+                <span>PM10 <b>{aqi_metric('pm10', 'PM10', 'µg/m³')}</b></span>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         hourly_air = air_quality.get("hourly", {})
         hourly_times = pd.to_datetime(hourly_air.get("time", []), errors="coerce")
