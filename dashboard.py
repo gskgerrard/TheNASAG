@@ -2541,25 +2541,6 @@ def send_aqi_email(recipient, subject, body):
     return send_alert_email(recipient, subject, body)
 
 
-def send_aqi_sms(recipient, body):
-    account = get_alert_secret("TWILIO_ACCOUNT_SID")
-    token = get_alert_secret("TWILIO_AUTH_TOKEN")
-    sender = get_alert_secret("TWILIO_FROM_NUMBER")
-    if not all([account, token, sender]):
-        return False, "Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER to app secrets to enable texts."
-    try:
-        response = requests.post(
-            f"https://api.twilio.com/2010-04-01/Accounts/{account}/Messages.json",
-            data={"To": recipient, "From": sender, "Body": body},
-            auth=(account, token),
-            timeout=15,
-        )
-        response.raise_for_status()
-        return True, None
-    except Exception as exc:
-        return False, f"Text delivery failed ({type(exc).__name__})."
-
-
 def us_aqi_category(value):
     """Translate the modeled U.S. AQI value into its familiar category."""
     if value is None or pd.isna(value):
@@ -2768,18 +2749,6 @@ with st.sidebar:
             ).strip()
         if not fire_email_to:
             st.caption("Sign in with an account that has an email address, or enter an address to receive fire alerts.")
-    fire_sms_enabled = st.checkbox(
-        "Text me when new fires are detected",
-        key="fire_alert_sms_enabled",
-        help="Sends one text for each refresh batch with new detections in your selected country scope. Requires Twilio messaging settings."
-    )
-    fire_alert_phone = ""
-    if fire_sms_enabled:
-        fire_alert_phone = st.text_input(
-            "Fire alert phone number (include country code)",
-            placeholder="+1 555 123 4567",
-            key="fire_alert_phone",
-        ).strip()
     if st.button("Send test popup", help="Shows a sample notification without contacting NASA or changing your alert baseline."):
         st.toast("🔥 Test popup: fire alerts are working.", icon="🔥")
     if fire_email_enabled and st.button("Send test fire email", key="test_fire_email"):
@@ -2793,16 +2762,6 @@ with st.sidebar:
             )
             if sent:
                 st.success(f"Test fire email sent to {fire_email_to}.")
-            else:
-                st.error(error)
-    if fire_sms_enabled and st.button("Send test fire text", key="test_fire_sms"):
-        test_phone = normalize_phone_number(fire_alert_phone)
-        if not test_phone:
-            st.warning("Enter a valid number in international format, starting with + and the country code.")
-        else:
-            sent, error = send_aqi_sms(test_phone, "Earth Emergency Command test: fire alert texts are working.")
-            if sent:
-                st.success("Test text sent.")
             else:
                 st.error(error)
     country_boundaries = load_country_boundaries()
@@ -3033,20 +2992,6 @@ if firms_is_live and firms_df is not None:
                         st.warning(delivery_error)
                 else:
                     st.warning("New fires were detected, but the fire alert email address is missing.")
-            if fire_sms_enabled:
-                sms_phone = normalize_phone_number(fire_alert_phone)
-                if sms_phone:
-                    fire_message = (
-                        f"Earth Emergency Command: {len(new_detections):,} new FIRMS fire detection(s) "
-                        f"in {scope_label}. Latest location: {location}. Detections are unconfirmed."
-                    )
-                    delivered, delivery_error = send_aqi_sms(sms_phone, fire_message)
-                    if delivered:
-                        st.toast("📱 Fire alert text sent.", icon="📱")
-                    else:
-                        st.warning(delivery_error)
-                else:
-                    st.warning("New fires were detected, but the fire alert phone number is missing or invalid.")
 
     # Keep a rolling baseline per satellite feed so detections do not alert again
     # on every automatic refresh. The limit bounds session memory on busy feeds.
@@ -3802,23 +3747,16 @@ with tab_atmosphere:
                         sent_alerts = st.session_state.setdefault("air_quality_alerted_places", {})
                         alert_key = row["Place"]
                         delivery_enabled = (
-                            st.session_state.get("aqi_alert_email_enabled") and st.session_state.get("aqi_alert_email", "").strip()
-                        ) or (
-                            st.session_state.get("aqi_alert_sms_enabled") and st.session_state.get("aqi_alert_phone", "").strip()
+                            st.session_state.get("aqi_alert_email_enabled")
+                            and st.session_state.get("aqi_alert_email", "").strip()
                         )
                         if delivery_enabled and not sent_alerts.get(alert_key):
                             alert_text = f"AQI alert: {row['Place']} is {row['Category']} (U.S. AQI {int(float(score))})."
                             alert_errors = []
                             delivered = False
                             email_to = st.session_state.get("aqi_alert_email", "").strip()
-                            sms_to = st.session_state.get("aqi_alert_phone", "").strip()
                             if st.session_state.get("aqi_alert_email_enabled") and email_to:
                                 ok, error = send_aqi_email(email_to, "Air quality alert", alert_text)
-                                delivered = delivered or ok
-                                if error:
-                                    alert_errors.append(error)
-                            if st.session_state.get("aqi_alert_sms_enabled") and sms_to:
-                                ok, error = send_aqi_sms(sms_to, alert_text)
                                 delivered = delivered or ok
                                 if error:
                                     alert_errors.append(error)
@@ -3838,17 +3776,12 @@ with tab_atmosphere:
                 compare_chart = px.bar(chart_frame, x="Place", y="U.S. AQI", color="Category", height=330, title="Current AQI by place")
                 st.plotly_chart(make_dark_fig(compare_chart), width="stretch", key="air_quality_comparison_chart")
 
-    with st.expander("🔔 AQI reminders by email or text", expanded=False):
-        st.caption("Alerts are checked every five minutes while the dashboard is open with Auto refresh on. Email delivery uses Resend SMTP; text delivery uses Twilio.")
+    with st.expander("🔔 AQI email reminders", expanded=False):
+        st.caption("Alerts are checked every five minutes while the dashboard is open with Auto refresh on. Email delivery uses Resend SMTP.")
         st.number_input("Alert when AQI reaches", min_value=51, max_value=500, value=101, step=10, key="aqi_alert_threshold")
         st.caption("AQI alerts work worldwide; readings use the U.S. AQI scale.")
-        email_enabled_col, sms_enabled_col = st.columns(2)
-        with email_enabled_col:
-            st.checkbox("Email alert", key="aqi_alert_email_enabled")
-            st.text_input("Email address", placeholder="you@example.com", key="aqi_alert_email")
-        with sms_enabled_col:
-            st.checkbox("Text alert", key="aqi_alert_sms_enabled")
-            st.text_input("Phone number (include country code)", placeholder="+1 555 123 4567", key="aqi_alert_phone")
+        st.checkbox("Email alert", key="aqi_alert_email_enabled")
+        st.text_input("Email address", placeholder="you@example.com", key="aqi_alert_email")
         st.caption("AQI reminders follow the places in your watchlist worldwide. The map’s country filter only affects maps and new-fire alerts.")
         if st.button("Send test AQI email", key="test_aqi_email"):
             test_recipient = st.session_state.get("aqi_alert_email", "").strip()
@@ -3865,13 +3798,12 @@ with tab_atmosphere:
                 else:
                     st.error(error)
         with st.expander("One-time provider setup"):
-            st.code('[smtp]\nSMTP_HOST = "smtp.resend.com"\nSMTP_PORT = 465\nSMTP_USER = "resend"\nSMTP_PASSWORD = "re_PASTE_RESEND_API_KEY"\nSMTP_FROM = "Earth Emergency Command <alerts@YOUR_VERIFIED_DOMAIN>"\nSMTP_USE_SSL = true\n\n[twilio]\nTWILIO_ACCOUNT_SID = "AC..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "+15551234567"\nTWILIO_VERIFY_SERVICE_SID = "VA..."', language="toml")
-            st.caption("For email, create a Resend API key and verify a domain you own in Resend, then add the [smtp] block above to Manage app → Settings → Secrets. The SMTP password is your Resend API key; the From address must use your verified domain. Resend recommends port 465 with SSL. Keep the key private. Twilio settings are only for text alerts and phone sign-in.")
+            st.code('[smtp]\nSMTP_HOST = "smtp.resend.com"\nSMTP_PORT = 465\nSMTP_USER = "resend"\nSMTP_PASSWORD = "re_PASTE_RESEND_API_KEY"\nSMTP_FROM = "Earth Emergency Command <alerts@YOUR_VERIFIED_DOMAIN>"\nSMTP_USE_SSL = true', language="toml")
+            st.caption("Create a Resend API key and verify a domain you own in Resend, then add the [smtp] block above to Manage app → Settings → Secrets. The SMTP password is your Resend API key; the From address must use your verified domain. Resend recommends port 465 with SSL. Keep the key private.")
 
     alerts_active = (
-        st.session_state.get("aqi_alert_email_enabled") and st.session_state.get("aqi_alert_email", "").strip()
-    ) or (
-        st.session_state.get("aqi_alert_sms_enabled") and st.session_state.get("aqi_alert_phone", "").strip()
+        st.session_state.get("aqi_alert_email_enabled")
+        and st.session_state.get("aqi_alert_email", "").strip()
     )
     monitor_time = time.time()
     last_monitor_time = st.session_state.get("air_quality_last_monitor_check", 0)
@@ -3900,11 +3832,6 @@ with tab_atmosphere:
                 delivered = delivered or email_delivered
                 if email_error:
                     alert_errors.append(email_error)
-            if st.session_state.get("aqi_alert_sms_enabled"):
-                sms_delivered, sms_error = send_aqi_sms(st.session_state.get("aqi_alert_phone", "").strip(), alert_message)
-                delivered = delivered or sms_delivered
-                if sms_error:
-                    alert_errors.append(sms_error)
             if alert_errors:
                 st.warning(" ".join(alert_errors))
             alerted_places[place_label] = delivered

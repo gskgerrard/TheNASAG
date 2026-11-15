@@ -53,21 +53,20 @@ Do not add these values to the repository. The client secret is stored only in S
 
 This sign-in establishes user identity only. It does not currently save dashboard preferences between sessions.
 
-## Phone-number sign-in and text alerts
+## Phone-number sign-in
 
 Phone sign-in uses Twilio Verify to send and validate a one-time SMS code. A verified phone sign-in lasts for the current Streamlit browser session. The app does not store a phone account or preserve sign-in across sessions.
 
-1. In Twilio, create a **Verify Service** and copy its Service SID (starts with `VA`). For fire and AQI text alerts, also configure a Twilio Messaging sender that can text your destination countries.
+1. In Twilio, create a **Verify Service** and copy its Service SID (starts with `VA`).
 2. Add the credentials to Streamlit Cloud → **Manage app → Settings → Secrets**. Keep the client secrets private. The `[twilio]` table is optional, but these values must be together under it if you use this format:
 
 ```toml
 [twilio]
 TWILIO_ACCOUNT_SID = "AC..."
 TWILIO_AUTH_TOKEN = "..."
-TWILIO_FROM_NUMBER = "+15551234567"
 TWILIO_VERIFY_SERVICE_SID = "VA..."
 ```
 
-The Verify Service SID is needed for phone sign-in. The sender number is needed for fire and AQI text alerts. Phone numbers entered in the dashboard must use international format, such as `+15551234567`. Twilio Verify validates the number before the app marks that browser session as signed in.
+Twilio settings are only used when someone chooses phone-number sign-in. No Twilio messaging sender is needed for dashboard alerts. Phone numbers entered in the sign-in form must use international format, such as `+15551234567`. Twilio Verify validates the number before the app marks that browser session as signed in.
 
-In the sidebar, turn on **Text me when new fires are detected** and enter a destination number to receive one message for each refresh batch with new detections. The existing **AQI reminders by email or text** settings can send AQI texts to a separate number. Both alert types need Twilio messaging configured; the AQI monitor also needs Auto refresh enabled.
+Fire and AQI alerts are delivered by email. AQI reminders are checked while the dashboard is open with Auto refresh enabled.
