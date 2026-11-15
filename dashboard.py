@@ -387,10 +387,9 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     color: #e8f7ff;
 }
 
-.hero {
-    text-align: center;
-    padding: 36px 24px 30px 24px;
-    border-radius: 30px;
+.st-key-home_hero {
+    padding: 18px 28px;
+    border-radius: 24px;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.12);
     box-shadow: 0 0 70px rgba(0, 191, 255, 0.14);
@@ -398,15 +397,12 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     backdrop-filter: blur(10px);
 }
 
-.earth-badge {
-    font-size: 76px;
-    display: inline-block;
-    animation: float 4.2s ease-in-out infinite;
-    filter: drop-shadow(0 0 22px rgba(56, 189, 248, 0.65));
+.st-key-home_hero [data-testid="stHorizontalBlock"] {
+    align-items: center;
 }
 
-.hero h1 {
-    margin-top: 8px;
+.st-key-home_hero h1 {
+    margin: 0;
     font-size: 42px;
     font-weight: 900;
     background: linear-gradient(90deg, #7dd3fc, #4ade80, #facc15, #fb7185);
@@ -414,9 +410,10 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     -webkit-text-fill-color: transparent;
 }
 
-.hero p {
+.st-key-home_hero p {
     color: #cbe8ff;
     font-size: 18px;
+    margin-bottom: 0;
 }
 
 .card {
@@ -430,11 +427,6 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 .small-note {
     color: #9fb8d8;
     font-size: 13px;
-}
-
-@keyframes float {
-    0%, 100% { transform: translateY(0px); }
-    50% { transform: translateY(-14px); }
 }
 
 [data-testid="stSidebar"] {
@@ -513,13 +505,12 @@ label *,
     [data-testid="stAppViewBlockContainer"] {
         padding: 1rem 0.75rem 2rem;
     }
-    .hero {
-        padding: 22px 14px;
+    .st-key-home_hero {
+        padding: 14px;
         border-radius: 18px;
     }
-    .earth-badge { font-size: 54px; }
-    .hero h1 { font-size: 28px; }
-    .hero p { font-size: 15px; }
+    .st-key-home_hero h1 { font-size: 28px; }
+    .st-key-home_hero p { font-size: 15px; }
     h1 { font-size: 1.65rem !important; }
     h2 { font-size: 1.35rem !important; }
     h3 { font-size: 1.1rem !important; }
@@ -2428,20 +2419,19 @@ ensure_coordinates_file(registry)
 # HERO
 # ============================================================
 
-st.markdown(
-    """
-    <div class="hero">
-        <h1>Earth Emergency Command</h1>
-        <p>NASA satellite data, live fire detections, and environmental monitoring in one place.</p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-if HOME_ART_PATH.is_file():
-    art_left, art_center, art_right = st.columns([1, 2, 1])
-    with art_center:
-        st.image(str(HOME_ART_PATH), width="stretch")
+with st.container(key="home_hero"):
+    logo_column, title_column = st.columns([1, 5])
+    with logo_column:
+        if HOME_ART_PATH.is_file():
+            st.image(str(HOME_ART_PATH), width=170)
+    with title_column:
+        st.markdown(
+            """
+            <h1>Earth Emergency Command</h1>
+            <p>NASA satellite data, live fire detections, and environmental monitoring in one place.</p>
+            """,
+            unsafe_allow_html=True,
+        )
 
 with st.container(key="floating_login"):
     account_button_label = "👤 Account" if account_is_logged_in() else "👤 Log in"
