@@ -1071,7 +1071,7 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
    // Draw only localized, supported FIRMS detections. No broad temperature layer is inferred.
    ctx.globalCompositeOperation='lighter';
-   for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.max(1.2,physicalRadius*1.8);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'d9');grad.addColorStop(.48,cell.color+'8a');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+   for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.max(4,physicalRadius*3.2);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'d9');grad.addColorStop(.48,cell.color+'8a');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
  }});
  new ThermalSurface().addTo(map);
 }}
@@ -2945,6 +2945,9 @@ with tab_global_map:
     ]
 
     layer = st.selectbox("Map layer", layer_options)
+    if layer == "FIRMS Fires" and st.session_state.get("_last_global_map_layer") != layer:
+        st.session_state["global_map_view"] = "Thermal vision"
+    st.session_state["_last_global_map_layer"] = layer
 
     map_view = st.radio(
         "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
@@ -3388,14 +3391,16 @@ with tab_atmosphere:
     st.markdown("### 🌬️ Current Air Quality")
     st.caption("Search a city or postcode, compare places, and follow AQI changes. Estimates are modelled, not street monitors.")
 
-    search_col, search_button_col = st.columns([4, 1])
-    with search_col:
-        aqi_place_query = st.text_input("Find a city or postcode", placeholder="e.g. Jakarta, Indonesia", key="air_quality_place_query")
-    with search_button_col:
-        st.write("")
-        aqi_search_clicked = st.button("Search places", key="air_quality_search_places", width="stretch")
+    with st.form("air_quality_city_search_form"):
+        search_col, search_button_col = st.columns([4, 1])
+        with search_col:
+            aqi_place_query = st.text_input("Find a city or postcode", placeholder="e.g. Surabaya, Indonesia", key="air_quality_place_query")
+        with search_button_col:
+            st.write("")
+            aqi_search_clicked = st.form_submit_button("Find city & load AQI", width="stretch")
     if aqi_search_clicked:
         st.session_state.pop("air_quality_place_results", None)
+        st.session_state.pop("air_quality_selected_place", None)
         if len(aqi_place_query.strip()) < 2:
             st.warning("Enter at least two characters to search.")
         else:
@@ -3409,7 +3414,11 @@ with tab_atmosphere:
                 st.session_state["air_quality_place_results"] = place_results
                 first_place = place_results[0]
                 selected_place_label = searched_air_quality_place_label(first_place)
-                st.session_state["air_quality_location_choice"] = selected_place_label
+                st.session_state["air_quality_selected_place"] = {
+                    "label": selected_place_label,
+                    "lat": float(first_place["latitude"]),
+                    "lon": float(first_place["longitude"]),
+                }
                 st.session_state["_air_quality_search_auto_load"] = True
                 st.success(f"Found {selected_place_label}. Loading its current AQI below.")
 
@@ -3424,27 +3433,21 @@ with tab_atmosphere:
     for place in searched_places:
         place_label = searched_air_quality_place_label(place)
         aqi_location_lookup[place_label] = (float(place["latitude"]), float(place["longitude"]))
-    aqi_manual_label = "Enter coordinates manually"
-    aqi_location_choices = list(aqi_location_lookup) + [aqi_manual_label]
-    selected_aqi_location = st.selectbox(
-        "AQI location",
-        aqi_location_choices,
-        key="air_quality_location_choice",
-    )
-
-    if selected_aqi_location == aqi_manual_label:
-        location_name = st.text_input("Location name", value="My location", key="air_quality_location_name").strip() or "My location"
-        aqi_lat_col, aqi_lon_col = st.columns(2)
-        with aqi_lat_col:
-            aqi_lat = st.number_input("Latitude", min_value=-90.0, max_value=90.0, value=0.0, step=0.1, key="air_quality_latitude")
-        with aqi_lon_col:
-            aqi_lon = st.number_input("Longitude", min_value=-180.0, max_value=180.0, value=0.0, step=0.1, key="air_quality_longitude")
-    else:
+    selected_air_quality_place = st.session_state.get("air_quality_selected_place")
+    if selected_air_quality_place:
+        selected_aqi_location = selected_air_quality_place["label"]
         location_name = selected_aqi_location
-        aqi_lat, aqi_lon = aqi_location_lookup[selected_aqi_location]
+        aqi_lat = selected_air_quality_place["lat"]
+        aqi_lon = selected_air_quality_place["lon"]
+        st.caption(f"Selected place: {location_name}")
+    else:
+        selected_aqi_location = None
+        location_name = ""
+        aqi_lat = aqi_lon = None
+        st.info("Search for a city or postcode above to load its current AQI.")
 
     with st.expander("📍 Compare and follow places", expanded=False):
-        st.caption("Choose up to five places worldwide. The map’s country filter does not limit AQI search or alerts.")
+        st.caption("Search for a city above, then select it here to monitor its AQI. Choose up to five places worldwide. The map’s country filter does not limit AQI search or alerts.")
         place_choices = list(aqi_location_lookup.keys())
         if "air_quality_followed_places" in st.session_state:
             st.session_state["air_quality_followed_places"] = [
@@ -3575,9 +3578,9 @@ with tab_atmosphere:
     elif alerts_active and followed_places and not auto_refresh:
         st.caption("Turn on Auto refresh in the sidebar to check AQI reminders every five minutes.")
 
-    load_aqi_clicked = st.button("Load current AQI", key="load_air_quality")
+    load_aqi_clicked = st.button("Load current AQI", key="load_air_quality") if selected_aqi_location else False
     auto_load_searched_place = st.session_state.pop("_air_quality_search_auto_load", False)
-    if load_aqi_clicked or auto_load_searched_place:
+    if selected_aqi_location and (load_aqi_clicked or auto_load_searched_place):
         with st.spinner(f"Loading air quality for {location_name}…"):
             air_quality_result, air_quality_error = fetch_air_quality(aqi_lat, aqi_lon)
         if air_quality_error:
@@ -3599,7 +3602,7 @@ with tab_atmosphere:
                     st.session_state["air_quality_history"] = history[-500:]
 
     saved_air_quality = st.session_state.get("air_quality_snapshot")
-    if saved_air_quality and saved_air_quality["lat"] == round(float(aqi_lat), 4) and saved_air_quality["lon"] == round(float(aqi_lon), 4):
+    if selected_aqi_location and saved_air_quality and saved_air_quality["lat"] == round(float(aqi_lat), 4) and saved_air_quality["lon"] == round(float(aqi_lon), 4):
         air_quality = saved_air_quality["data"]
         current_air = air_quality.get("current", {})
         current_units = air_quality.get("current_units", {})
@@ -3675,7 +3678,7 @@ with tab_atmosphere:
         model_lon = air_quality.get("longitude", saved_air_quality["lon"])
         st.caption(f"Modeled estimate for the nearest grid cell ({float(model_lat):.3f}, {float(model_lon):.3f}); current model time: {current_air.get('time', 'unavailable')} {air_quality.get('timezone_abbreviation', '')}.")
     else:
-        st.info("Choose a location and select **Load current AQI** to fetch the estimate.")
+        st.info("Search for a city above to fetch its air-quality estimate.")
 
     st.caption("This is a model-based estimate, not a ground-monitor reading. Forecast coverage is about 11 km in Europe and 45 km globally. Sources: [Open-Meteo Air Quality API](https://open-meteo.com/en/docs/air-quality-api) and [Copernicus Atmosphere Monitoring Service (CAMS)](https://atmosphere.copernicus.eu/).")
 
@@ -3845,6 +3848,7 @@ with tab_live_fire:
         if firms_map_df.empty:
             st.info("No fire detections are in the selected countries.")
 
+        st.session_state.setdefault("firms_map_view", "Thermal vision")
         map_view = st.radio(
             "Map view", ["Globe / flat map", "Interactive tile map", "Thermal vision"],
             horizontal=True, key="firms_map_view",
