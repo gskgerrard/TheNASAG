@@ -165,6 +165,7 @@ DERIVED_EXCLUDE = {
     "__file__",
     "fire_activity",
     "fire_intensity",
+    "fire_risk_proxy",
     "heat_intensity",
     "co2_intensity",
     "smoke_intensity",
@@ -187,6 +188,7 @@ HAZARD_COLORS = {
 
 LOCAL_PROXY_LAYERS = {
     "Local Fire proxy": "fire_intensity",
+    "Local Fire Risk Estimate": "fire_risk_proxy",
     "Local Heat proxy": "heat_intensity",
     "Local Smoke proxy": "smoke_intensity",
     "Local Haze proxy": "haze_intensity",
@@ -1090,7 +1092,7 @@ html,body,#map{{height:100%;width:100%;margin:0;background:#071426}}.leaflet-con
 </style></head><body><div id="map"></div><div class="map-note">__NOTE____LEGEND__</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
 const rows={payload}; const thermalCells={surface_payload}; const thermalRadiusMeters={surface_radius_meters};
-const fireSurface={str(color_by in {"frp", "fire_intensity", "latest_risk"}).lower()};
+const fireSurface={str(color_by in {"frp", "fire_intensity", "fire_risk_proxy", "latest_risk"}).lower()};
 const thermal={str(thermal).lower()};
 const focusBounds={json.dumps(focus_bounds)};
 const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true,worldCopyJump:false,minZoom:1}});
@@ -1204,6 +1206,17 @@ def average_z_intensity(df, cols):
     intensity = intensity.fillna(0.0).clip(lower=0.0)
 
     return intensity
+
+
+def positive_relative_anomaly(df, column, *, invert=False):
+    """Return a positive within-region anomaly for one measured input column."""
+    values = pd.to_numeric(df[column], errors="coerce")
+    if invert:
+        values = -values
+    means = values.groupby(df["region"], sort=False).transform("mean")
+    stds = values.groupby(df["region"], sort=False).transform("std", ddof=0)
+    score = ((values - means) / stds.where(stds > 1e-9)).replace([np.inf, -np.inf], np.nan)
+    return score.fillna(0.0).clip(lower=0.0).where(values.notna())
 
 
 def limit_map_points(df, max_points=10000):
@@ -1518,6 +1531,34 @@ def add_derived_columns(df):
         df["fire_intensity"] = np.nan
         notes.append("No direct fire detections found; fire values are left blank rather than inferred from weather or vegetation.")
 
+    # This is a separate weather/fuel risk estimate, never an active-fire map.
+    temperature_col = first_matching_column(
+        df, ["tmax", "temperature", "temp", "lst", "surface_temperature"],
+        exclude=DERIVED_EXCLUDE,
+    )
+    soil_col = first_matching_column(
+        df, ["soil_moisture", "soil_water", "soil"],
+        exclude=DERIVED_EXCLUDE,
+    )
+    vegetation_col = first_matching_column(
+        df, ["ndvi", "vegetation_index"], exclude=DERIVED_EXCLUDE
+    )
+    dry_components = [
+        positive_relative_anomaly(df, column, invert=True)
+        for column in (soil_col, vegetation_col)
+        if column
+    ]
+    if temperature_col and dry_components:
+        heat_score = positive_relative_anomaly(df, temperature_col)
+        dryness_score = pd.concat(dry_components, axis=1).mean(axis=1)
+        df["fire_risk_proxy"] = np.sqrt((heat_score * dryness_score).clip(lower=0)).where(
+            heat_score.notna() & dryness_score.notna()
+        )
+        notes.append("Fire risk estimate uses unusually warm and dry local conditions; it is not a satellite fire detection.")
+    else:
+        df["fire_risk_proxy"] = np.nan
+        notes.append("Fire risk estimate unavailable; local temperature and soil-moisture or vegetation data are needed.")
+
     # HEAT
     heat_cols = find_matching_columns(
         df,
@@ -1724,6 +1765,7 @@ def build_point_summary(df):
 
     intensity_cols = [
         "fire_intensity",
+        "fire_risk_proxy",
         "heat_intensity",
         "smoke_intensity",
         "haze_intensity",
@@ -1805,6 +1847,7 @@ def build_region_registry(raw_data, point_summary, risk_latest):
             agg["emergency_label"] = "sum"
         for intensity_column in (
             "fire_intensity",
+            "fire_risk_proxy",
             "heat_intensity",
             "smoke_intensity",
             "haze_intensity",
@@ -1843,7 +1886,7 @@ def build_region_registry(raw_data, point_summary, risk_latest):
     if not parts:
         return pd.DataFrame(columns=[
             "region", "lat", "lon", "rows", "emergency_labels",
-            "fire_intensity", "heat_intensity", "smoke_intensity",
+            "fire_intensity", "fire_risk_proxy", "heat_intensity", "smoke_intensity",
             "haze_intensity", "flood_intensity", "co2_intensity", "latest_risk",
         ])
 
@@ -1868,7 +1911,7 @@ def build_region_registry(raw_data, point_summary, risk_latest):
     # Missing measurements stay missing. Zero would look like a measured
     # baseline and can turn into a misleading map layer.
     for col in (
-        "fire_intensity", "heat_intensity", "smoke_intensity",
+        "fire_intensity", "fire_risk_proxy", "heat_intensity", "smoke_intensity",
         "haze_intensity", "flood_intensity", "co2_intensity",
     ):
         if col not in registry.columns:
@@ -3042,6 +3085,7 @@ with tab_global_map:
         "FIRMS Fires",
         "Estimated Fire Intensity",
         "Local Fire proxy",
+        "Local Fire Risk Estimate",
         "Local Heat proxy",
         "Local Smoke proxy",
         "Local Haze proxy",
@@ -3213,6 +3257,11 @@ with tab_global_map:
             elif layer == "Local Fire proxy":
                 color = "fire_intensity"
                 size = "fire_intensity"
+                color_scale = "YlOrRd"
+
+            elif layer == "Local Fire Risk Estimate":
+                color = "fire_risk_proxy"
+                size = "fire_risk_proxy"
                 color_scale = "YlOrRd"
 
             elif layer == "Local Heat proxy":
@@ -3403,6 +3452,7 @@ with tab_local_hazards:
     else:
         hazard_options = {
             "Fire": ("fire_intensity", "YlOrRd"),
+            "Fire risk estimate": ("fire_risk_proxy", "YlOrRd"),
             "Heat": ("heat_intensity", "Hot"),
             "Smoke": ("smoke_intensity", "Greys"),
             "Haze": ("haze_intensity", "PuBu"),
@@ -3426,6 +3476,9 @@ with tab_local_hazards:
             if selected_hazard == "Fire":
                 timeline_source = raw_data.dropna(subset=[col])
                 st.caption("Shows only rows with direct fire/thermal measurements; weather and vegetation are not treated as fire detections.")
+            elif selected_hazard == "Fire risk estimate":
+                timeline_source = raw_data.dropna(subset=[col])
+                st.caption("Relative estimate from unusually warm and dry local conditions. This is not evidence of an active fire; NASA FIRMS provides the satellite fire detections.")
 
             if timeline_source.empty:
                 st.info(f"No direct {selected_hazard.lower()} measurements are available in the loaded local data.")
