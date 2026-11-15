@@ -48,6 +48,7 @@ except ImportError:
 
 ROOT_DIR = Path(__file__).resolve().parent
 HOME_ART_PATH = ROOT_DIR / "assets" / "earthguard-home.png"
+APP_ICON_PATH = ROOT_DIR / "assets" / "earthguard-icon.png"
 DATA_DIR = str(ROOT_DIR / "data")
 OUTPUT_DIR = str(ROOT_DIR / "output")
 COORD_PATH = str(ROOT_DIR / "data" / "coordinates.csv")
@@ -386,7 +387,7 @@ def fire_detection_ids(data_frame):
 
 st.set_page_config(
     page_title="Earth Emergency Command",
-    page_icon="🌍",
+    page_icon=str(APP_ICON_PATH),
     layout="wide",
     initial_sidebar_state="collapsed"
 )
