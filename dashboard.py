@@ -692,14 +692,14 @@ def sample_map_points(data_frame, max_points=2000, rank_by=None):
     return pd.concat([strongest, sampled]).drop_duplicates().copy()
 
 
-def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_cells=4500):
+def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meters=1000, max_cells=9000):
     """Aggregate detections into a lightweight, zoom-scaled thermal surface."""
     if data_frame is None or data_frame.empty:
         return [], 0, "nearby point density"
 
-    # Start near a kilometre so adjacent sensor detections can merge into a
-    # coherent patch, while distant single pixels stay as individual markers.
-    step_degrees = max(0.01, (float(pixel_size_meters) / 111_195.0) * 3.0)
+    # Keep bins close to the source pixel size so adjacent detections form
+    # continuous patches instead of isolated circles when the user zooms in.
+    step_degrees = max(0.003, (float(pixel_size_meters) / 111_195.0) * 1.25)
     numeric = pd.to_numeric(data_frame[value_column], errors="coerce") if value_column in data_frame.columns else pd.Series(np.nan, index=data_frame.index)
     has_measurement = numeric.notna().any()
     work = data_frame[["lat", "lon"]].copy()
@@ -1080,8 +1080,8 @@ if(thermalCells.length){{
   onRemove:function(target){{target.off('moveend zoomend resize',this._draw,this);L.DomUtil.remove(this._canvas)}},
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
-   ctx.globalCompositeOperation='source-over';
-  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(30,Math.max(12,physicalRadius*3.5));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;if(fireSurface){{const smokeRadius=r*1.6,smoke=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,smokeRadius);smoke.addColorStop(0,'#4b282d55');smoke.addColorStop(.48,'#5b34302c');smoke.addColorStop(1,'#5b343000');ctx.globalAlpha=.55;ctx.fillStyle=smoke;ctx.beginPath();ctx.arc(p.x,p.y,smokeRadius,0,Math.PI*2);ctx.fill()}}const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'ee');grad.addColorStop(.38,cell.color+'bb');grad.addColorStop(.74,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=Math.min(.78,cell.strength*(fireSurface?1.35:1));ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+   ctx.globalCompositeOperation='source-over';ctx.filter=fireSurface?'blur(3px)':'none';
+  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,r=Math.min(64,Math.max(6,physicalRadius*.85));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'ee');grad.addColorStop(.38,cell.color+'bb');grad.addColorStop(.74,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=Math.min(.78,cell.strength*(fireSurface?1.35:1));ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.filter='none';ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
  }});
  new ThermalSurface().addTo(map);
 }}
@@ -1090,7 +1090,7 @@ const box=document.createElement('div');for(const [label,value] of Object.entrie
 if(!Object.keys(item.details).length){{const line=document.createElement('div');line.textContent=item.lat.toFixed(3)+', '+item.lon.toFixed(3);box.appendChild(line)}}marker.bindPopup(box)}}
 </script></body></html>""".replace(
         "__NOTE__",
-        ((f"Wildfire-style glow · deep red → yellow = {surface_basis} · outer halo is visual only · {len(surface_rows):,} supported areas"
+        ((f"Wildfire-style glow · deep red → yellow = {surface_basis} · soft edges are visual only; no smoke plume or perimeter is inferred · {len(surface_rows):,} supported areas"
           if color_by in {"frp", "fire_intensity", "latest_risk"}
           else f"Soft heat map · green → red = {surface_basis} · no supported points = transparent · {len(surface_rows):,} supported areas") if thermal
          else f"{len(frame):,} of {total:,} mapped · drag to pan · pinch or use +/− to zoom")
@@ -3080,7 +3080,7 @@ with tab_global_map:
                         key="map_firms_global",
                     )
                 if map_view == "Soft heat map":
-                    st.caption(f"Data source: {firms_display_source}. The soft heat coloring shows relative satellite fire radiative power (FRP) around supported clusters. It does not show ground temperature or fire perimeters.")
+                    st.caption(f"Data source: {firms_display_source}. The red-to-yellow glow follows neighboring NASA FIRMS hotspots; soft edges are visual styling, not smoke, ground temperature, or a fire perimeter.")
                 else:
                     st.caption(f"Data source: {firms_display_source}. NASA FIRMS satellite detections are shown as individual points. A single detection does not confirm a wildfire; use the table for the full feed.")
 
@@ -3948,7 +3948,7 @@ with tab_live_fire:
             )
         if map_view == "Soft heat map":
             style_label = "Soft heat map"
-            st.caption(f"{style_label} shows supported clusters of NASA FIRMS fire detections by relative satellite fire radiative power (FRP), not ground temperature or fire perimeters.")
+            st.caption(f"{style_label} follows neighboring NASA FIRMS hotspots by relative satellite fire radiative power (FRP). Soft edges are visual styling, not smoke, ground temperature, or fire perimeters.")
         else:
             st.caption("NASA FIRMS detections are shown as orange/red points. A detection does not confirm a wildfire; use the table for the full feed.")
 
