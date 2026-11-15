@@ -741,7 +741,9 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
     high = float(cells["value"].quantile(0.98))
     stops = [(34, 197, 94), (132, 204, 22), (234, 179, 8), (249, 115, 22), (239, 68, 68)]
     records = []
-    render_cells = cells.rename(columns={"__local_support": "local_support"})
+    render_cells = cells.rename(columns={
+        "__lat_cell": "grid_lat", "__lon_cell": "grid_lon", "__local_support": "local_support",
+    })
     for row in render_cells.itertuples(index=False):
         fraction = 0.5 if high <= low else min(1.0, max(0.0, (float(row.value) - low) / (high - low)))
         segment = min(len(stops) - 2, int(fraction * (len(stops) - 1)))
@@ -753,6 +755,7 @@ def make_thermal_surface_records(data_frame, value_column=None, pixel_size_meter
             "lat": float(row.lat), "lon": float(row.lon), "color": color,
             "strength": 0.18 + 0.32 * fraction,
             "support": int(row.local_support),
+            "gridLat": int(row.grid_lat), "gridLon": int(row.grid_lon),
         })
     records.sort(key=lambda record: record["strength"])
     if value_column == "frp":
@@ -1087,7 +1090,9 @@ if(thermalCells.length){{
   _draw:function(){{const size=this._map.getSize(),origin=this._map.containerPointToLayerPoint([0,0]),dpr=Math.min(window.devicePixelRatio||1,1.25),canvas=this._canvas;canvas.width=size.x*dpr;canvas.height=size.y*dpr;canvas.style.width=size.x+'px';canvas.style.height=size.y+'px';L.DomUtil.setPosition(canvas,origin);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size.x,size.y);const zoom=this._map.getZoom();
    // Draw localized supported values; the surface does not invent values between distant points.
    ctx.globalCompositeOperation='source-over';
-  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,supportScale=fireSurface?1.3+Math.min(.7,Math.max(0,cell.support-2)*.12):1,r=Math.min(fireSurface?38:30,Math.max(12,physicalRadius*3.5*supportScale));if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
+  const cellRadius=cell=>{{const metersPerPixel=156543.03392*Math.max(0.08,Math.cos(cell.lat*Math.PI/180))/Math.pow(2,zoom),physicalRadius=thermalRadiusMeters/metersPerPixel,supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1;return Math.min(fireSurface?24:30,Math.max(fireSurface?7:12,physicalRadius*3.5*supportScale))}};
+  if(fireSurface){{const grid=new Map(thermalCells.map(cell=>[`${{cell.gridLat}}:${{cell.gridLon}}`,cell]));ctx.lineCap='round';ctx.lineJoin='round';for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin);for(const [dlat,dlon] of [[1,0],[0,1],[1,1],[-1,1]]){{const neighbor=grid.get(`${{cell.gridLat+dlat}}:${{cell.gridLon+dlon}}`);if(!neighbor)continue;const q=this._map.latLngToLayerPoint([neighbor.lat,neighbor.lon]).subtract(origin),distance=p.distanceTo(q);if(distance>72)continue;ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.strokeStyle=cell.color;ctx.globalAlpha=Math.min(.28,Math.min(cell.strength,neighbor.strength)*.42);ctx.lineWidth=Math.max(3,Math.min(6,Math.min(cellRadius(cell),cellRadius(neighbor))*.42));ctx.stroke()}}}}ctx.globalAlpha=1;
+  for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');ctx.globalAlpha=cell.strength;ctx.fillStyle=grad;ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill()}}ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over'}}
  }});
  new ThermalSurface().addTo(map);
 }}
