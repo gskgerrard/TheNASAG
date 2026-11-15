@@ -1782,8 +1782,16 @@ def build_region_registry(raw_data, point_summary, risk_latest):
         agg = {"date": "count"} if "date" in raw_data.columns else {}
         if "emergency_label" in raw_data.columns:
             agg["emergency_label"] = "sum"
-        if "fire_intensity" in raw_data.columns:
-            agg["fire_intensity"] = "mean"
+        for intensity_column in (
+            "fire_intensity",
+            "heat_intensity",
+            "smoke_intensity",
+            "haze_intensity",
+            "flood_intensity",
+            "co2_intensity",
+        ):
+            if intensity_column in raw_data.columns:
+                agg[intensity_column] = "mean"
         if agg:
             raw_stats = raw_data.groupby("region", as_index=False).agg(agg)
             raw_stats = raw_stats.rename(columns={
