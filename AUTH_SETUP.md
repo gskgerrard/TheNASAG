@@ -2,19 +2,19 @@
 
 ## AQI and fire email alerts
 
-Email delivery uses the SMTP server for the sender account. Add the provider settings in Streamlit Cloud → **Manage app → Settings → Secrets**; do not put credentials in GitHub. The app accepts a `[smtp]` secrets section or the same `SMTP_*` keys at the top level:
+Email delivery uses Resend SMTP. Create a Resend API key and add a domain you own in Resend. Copy the DNS records Resend provides into your domain provider and wait for verification. Use a sender address at that verified domain. [Resend SMTP settings](https://resend.com/docs/send-with-smtp), [create an API key](https://resend.com/docs/create-an-api-key), and [verify a domain](https://resend.com/docs/add-a-domain).
 
 ```toml
 [smtp]
-SMTP_HOST = "smtp.example.com"
-SMTP_PORT = 587
-SMTP_USER = "you@example.com"
-SMTP_PASSWORD = "provider app password"
-SMTP_FROM = "you@example.com"
-SMTP_USE_SSL = false
+SMTP_HOST = "smtp.resend.com"
+SMTP_PORT = 465
+SMTP_USER = "resend"
+SMTP_PASSWORD = "re_PASTE_RESEND_API_KEY_HERE"
+SMTP_FROM = "Earth Emergency Command <alerts@YOUR_VERIFIED_DOMAIN>"
+SMTP_USE_SSL = true
 ```
 
-Port 587 uses STARTTLS by default; port 465 uses SSL (or set `SMTP_USE_SSL = true`). Use the SMTP host and an app-specific password required by your mail provider. In the dashboard, send a test AQI email or test fire email before enabling alerts. AQI alert emails are sent when a watched place reaches the threshold during a comparison or while Auto refresh is active. New-fire emails are sent after the initial live FIRMS snapshot, when a later refresh finds new detections.
+Add this block in Streamlit Cloud → **Manage app → Settings → Secrets**. Resend uses `resend` as the SMTP username and the API key as the SMTP password; port 465 uses implicit SSL/TLS. Keep the API key private and out of GitHub. In the dashboard, send a test AQI email or test fire email. AQI email alerts are sent when a watched place reaches the threshold during a comparison or while Auto refresh is active. New-fire emails are sent after the initial live FIRMS snapshot, when a later refresh finds new detections.
 
 The dashboard uses Streamlit's OpenID Connect sign-in. **Log in** at the bottom-right opens the sign-in pop-up; the same option is under **Settings & account** in the sidebar. Sign-in is optional, and the dashboard stays public when nobody is signed in.
 

@@ -2754,7 +2754,7 @@ with st.sidebar:
     fire_email_enabled = st.checkbox(
         "Email me when new fires are detected",
         key="fire_alert_email_enabled",
-        help="Sends one email per refresh batch of new FIRMS detections. Requires SMTP settings in app secrets."
+        help="Sends one email per refresh batch of new FIRMS detections. Requires Resend SMTP settings in app secrets."
     )
     fire_email_to = current_account_email()
     if fire_email_enabled:
@@ -3839,7 +3839,7 @@ with tab_atmosphere:
                 st.plotly_chart(make_dark_fig(compare_chart), width="stretch", key="air_quality_comparison_chart")
 
     with st.expander("🔔 AQI reminders by email or text", expanded=False):
-        st.caption("Alerts are checked every five minutes while the dashboard is open with Auto refresh on. Delivery needs your own SMTP/Twilio settings in app secrets.")
+        st.caption("Alerts are checked every five minutes while the dashboard is open with Auto refresh on. Email delivery uses Resend SMTP; text delivery uses Twilio.")
         st.number_input("Alert when AQI reaches", min_value=51, max_value=500, value=101, step=10, key="aqi_alert_threshold")
         st.caption("AQI alerts work worldwide; readings use the U.S. AQI scale.")
         email_enabled_col, sms_enabled_col = st.columns(2)
@@ -3865,8 +3865,8 @@ with tab_atmosphere:
                 else:
                     st.error(error)
         with st.expander("One-time provider setup"):
-            st.code('[smtp]\nSMTP_HOST = "smtp.example.com"\nSMTP_PORT = 587\nSMTP_USER = "you@example.com"\nSMTP_PASSWORD = "provider app password"\nSMTP_FROM = "you@example.com"\nSMTP_USE_SSL = false\n\n[twilio]\nTWILIO_ACCOUNT_SID = "AC..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "+15551234567"\nTWILIO_VERIFY_SERVICE_SID = "VA..."', language="toml")
-            st.caption("Add the [smtp] block to Manage app → Settings → Secrets. Use port 587 with SMTP_USE_SSL = false (STARTTLS), or port 465 with SMTP_USE_SSL = true. The username, password, and From address must be valid for your email provider; Gmail generally requires an App Password. Credentials stay in Streamlit Secrets, never in GitHub. Twilio settings are only for text alerts and phone sign-in.")
+            st.code('[smtp]\nSMTP_HOST = "smtp.resend.com"\nSMTP_PORT = 465\nSMTP_USER = "resend"\nSMTP_PASSWORD = "re_PASTE_RESEND_API_KEY"\nSMTP_FROM = "Earth Emergency Command <alerts@YOUR_VERIFIED_DOMAIN>"\nSMTP_USE_SSL = true\n\n[twilio]\nTWILIO_ACCOUNT_SID = "AC..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "+15551234567"\nTWILIO_VERIFY_SERVICE_SID = "VA..."', language="toml")
+            st.caption("For email, create a Resend API key and verify a domain you own in Resend, then add the [smtp] block above to Manage app → Settings → Secrets. The SMTP password is your Resend API key; the From address must use your verified domain. Resend recommends port 465 with SSL. Keep the key private. Twilio settings are only for text alerts and phone sign-in.")
 
     alerts_active = (
         st.session_state.get("aqi_alert_email_enabled") and st.session_state.get("aqi_alert_email", "").strip()
