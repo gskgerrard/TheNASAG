@@ -273,6 +273,21 @@ def filter_points_to_country_scope(data_frame, country_names, specific_scope, bo
     return data_frame.loc[matches].copy()
 
 
+def filter_points_near_location(data_frame, latitude, longitude, radius_km=100):
+    """Return detections within a geodesic radius of a searched city."""
+    if data_frame is None or data_frame.empty or not {"lat", "lon"}.issubset(data_frame.columns):
+        return data_frame.iloc[0:0].copy() if data_frame is not None else data_frame
+    latitudes = pd.to_numeric(data_frame["lat"], errors="coerce")
+    longitudes = pd.to_numeric(data_frame["lon"], errors="coerce")
+    lat1 = np.radians(float(latitude))
+    lat2 = np.radians(latitudes)
+    delta_lat = lat2 - lat1
+    delta_lon = np.radians(longitudes - float(longitude))
+    haversine = np.sin(delta_lat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(delta_lon / 2) ** 2
+    distance_km = 6371.0088 * 2 * np.arcsin(np.sqrt(np.clip(haversine, 0, 1)))
+    return data_frame.loc[distance_km <= float(radius_km)].copy()
+
+
 def selected_country_focus_bounds(country_names, boundaries):
     """Return padded Leaflet bounds for the selected countries, if any."""
     features = [feature for feature in boundaries if feature["name"] in country_names]
@@ -2560,7 +2575,7 @@ with st.sidebar:
         ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "MODIS_NRT"],
         help="Near real-time active fire detections from NASA FIRMS."
     )
-    firms_days = st.slider("FIRMS lookback days", 1, 5, 5)
+    firms_days = st.slider("FIRMS lookback days", 1, 5, 1)
     include_low_confidence = st.checkbox(
         "Include low-confidence detections",
         value=False,
@@ -2751,6 +2766,20 @@ if firms_df is not None and not include_low_confidence and "confidence" in firms
     # so alternative FIRMS feeds with different schemas are not silently lost.
     confidence = firms_df["confidence"].astype(str).str.strip().str.lower()
     firms_df = firms_df.loc[confidence.ne("low")].copy()
+
+firms_data_is_current = bool(firms_is_live)
+firms_freshness_note = ""
+if firms_url_loaded and firms_df is not None:
+    if "date" not in firms_df.columns:
+        firms_freshness_note = "The configured CSV has no observation dates, so its hotspots cannot be verified as current."
+    else:
+        latest_firms_date = pd.to_datetime(firms_df["date"], errors="coerce", utc=True).max()
+        age_hours = (pd.Timestamp.now(tz="UTC") - latest_firms_date).total_seconds() / 3600 if pd.notna(latest_firms_date) else float("inf")
+        firms_data_is_current = age_hours <= max(24, firms_days * 24)
+        if not firms_data_is_current:
+            firms_freshness_note = f"The configured CSV is {age_hours / 24:.1f} days old, beyond the selected {firms_days}-day period."
+if not firms_data_is_current and not firms_freshness_note:
+    firms_freshness_note = "Only a saved historical snapshot is available; it is not plotted as current fire activity."
 
 if live_events is not None and not live_events.empty and not show_all_geometry:
     live_events = (
@@ -3043,10 +3072,15 @@ with tab_global_map:
                 firms_df, selected_countries,
                 country_scope_mode == "Selected countries", country_boundaries,
             )
-            if not firms_is_live:
+            if not firms_data_is_current:
                 st.warning(firms_error)
+                st.caption(firms_freshness_note)
+                firms_map_df = firms_map_df.iloc[0:0].copy()
             if firms_map_df.empty:
-                st.info("No fire detections are in the selected countries.")
+                if not firms_data_is_current:
+                    st.info("No current fire layer is shown because this data is stale or its date cannot be verified. Historical records remain in the table below.")
+                else:
+                    st.info("No NASA FIRMS detections are in the selected countries for this feed period.")
             else:
                 if map_view != "Globe / flat map":
                     if map_view == "Soft heat map":
@@ -3406,7 +3440,7 @@ with tab_atmosphere:
             aqi_place_query = st.text_input("Find a city", placeholder="e.g. Surabaya, Indonesia", key="air_quality_place_query")
         with search_button_col:
             st.write("")
-            aqi_search_clicked = st.form_submit_button("Find city & load AQI", width="stretch")
+            aqi_search_clicked = st.form_submit_button("Search city + show AQI & fires", width="stretch")
     if aqi_search_clicked:
         st.session_state.pop("air_quality_place_results", None)
         st.session_state.pop("air_quality_selected_place", None)
@@ -3429,7 +3463,7 @@ with tab_atmosphere:
                     "lon": float(first_place["longitude"]),
                 }
                 st.session_state["_air_quality_search_auto_load"] = True
-                st.success(f"Found {selected_place_label}. Loading its current AQI below.")
+                st.success(f"Found {selected_place_label}. Loading AQI and nearby satellite hotspots below.")
 
     searched_places = st.session_state.get("air_quality_place_results", [])
 
@@ -3449,6 +3483,32 @@ with tab_atmosphere:
         aqi_lat = selected_air_quality_place["lat"]
         aqi_lon = selected_air_quality_place["lon"]
         st.caption(f"Selected place: {location_name}")
+        st.markdown(f"#### 🔥 NASA fire detections near {location_name}")
+        if firms_df is None:
+            st.info(f"No current NASA FIRMS detections are available: {firms_error}")
+        elif not firms_data_is_current:
+            st.warning(
+                f"Current fires near this city cannot be verified: {firms_freshness_note} "
+                "Add a valid NASA FIRMS MAP_KEY to refresh detections."
+            )
+        else:
+            nearby_fires = filter_points_near_location(firms_df, aqi_lat, aqi_lon, radius_km=75)
+            if nearby_fires.empty:
+                st.success("No NASA FIRMS satellite hotspots were detected within 75 km in the selected feed period.")
+            else:
+                st.caption(
+                    f"{len(nearby_fires):,} satellite thermal detections within 75 km · {firms_display_source}. "
+                    "These are hotspot detections, not confirmed fires or fire boundaries."
+                )
+                latitude_radius = 75 / 111.195
+                longitude_radius = min(180, latitude_radius / max(0.08, np.cos(np.radians(float(aqi_lat)))))
+                render_leaflet_points(
+                    nearby_fires, color_by="frp", height=380, point_limit=2000, thermal=True,
+                    pixel_size_meters=1000 if firms_source_used == "MODIS_NRT" else 375,
+                    focus_bounds=[aqi_lon - longitude_radius, aqi_lat - latitude_radius,
+                                  aqi_lon + longitude_radius, aqi_lat + latitude_radius],
+                    key="aqi_city_nearby_fires_map",
+                )
     else:
         selected_aqi_location = None
         location_name = ""
@@ -3901,13 +3961,16 @@ with tab_live_fire:
             st.success(f"Loaded {len(firms_df):,} live fire detections from NASA FIRMS ({firms_source_used}).")
             if firms_error:
                 st.info(firms_error)
-        elif firms_url:
+        elif firms_url_loaded and firms_data_is_current:
             st.info(f"Loaded {len(firms_df):,} detections from the configured CSV URL. {firms_error}")
         else:
             st.warning(firms_error)
-            st.caption(f"Showing {len(firms_df):,} saved detections; this snapshot is not live.")
+            st.caption(firms_freshness_note)
+            st.caption("Historical detections are available in the records table, but are not drawn as current fire activity.")
+            firms_map_df = firms_map_df.iloc[0:0].copy()
         if firms_map_df.empty:
-            st.info("No fire detections are in the selected countries.")
+            if firms_data_is_current:
+                st.info("No NASA FIRMS detections are in the selected countries for this feed period.")
 
         map_view = st.radio(
             "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
