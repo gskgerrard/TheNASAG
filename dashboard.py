@@ -65,12 +65,11 @@ EONET_URL = "https://eonet.gsfc.nasa.gov/api/v3/events"
 FIRE_KEYWORDS = [
     "fire",
     "frp",
-    "burn",
     "hotspot",
     "thermal",
-    "bright",
+    "bright_ti4",
+    "bright_ti5",
     "flame",
-    "confidence",
 ]
 
 HEAT_KEYWORDS = [
@@ -86,11 +85,9 @@ HEAT_KEYWORDS = [
 
 CO2_KEYWORDS = [
     "co2",
+    "co_2",
     "carbon_dioxide",
     "xco2",
-    "carbon",
-    "greenhouse",
-    "ghg",
 ]
 
 SMOKE_KEYWORDS = [
@@ -101,7 +98,6 @@ SMOKE_KEYWORDS = [
     "pm10",
     "particulate",
     "optical_depth",
-    "air_quality",
 ]
 
 HAZE_KEYWORDS = [
@@ -118,12 +114,11 @@ HAZE_KEYWORDS = [
 FLOOD_KEYWORDS = [
     "flood",
     "inundation",
-    "water",
-    "precip",
-    "rain",
-    "rainfall",
+    "water_extent",
+    "water_level",
     "discharge",
-    "river",
+    "river_level",
+    "river_stage",
 ]
 
 EMERGENCY_KEYWORDS = [
@@ -189,6 +184,16 @@ HAZARD_COLORS = {
     "Ice": "#67e8f9",
     "Other": "#22c55e",
 }
+
+LOCAL_PROXY_LAYERS = {
+    "Local Fire proxy": "fire_intensity",
+    "Local Heat proxy": "heat_intensity",
+    "Local Smoke proxy": "smoke_intensity",
+    "Local Haze proxy": "haze_intensity",
+    "Local Flood proxy": "flood_intensity",
+    "Local CO₂ proxy": "co2_intensity",
+}
+LOCAL_PROXY_COLUMNS = set(LOCAL_PROXY_LAYERS.values())
 
 
 @st.cache_data(show_spinner=False)
@@ -1221,6 +1226,19 @@ def count_positive_points(point_summary, col):
     return int((point_summary[col] > 0).sum())
 
 
+def filter_to_available_proxy_signal(frame, column):
+    """Keep only positive local anomaly scores; never turn missing data into density."""
+    if frame is None or frame.empty or column not in frame.columns:
+        return pd.DataFrame(), "No measurements are available for this local signal."
+    values = pd.to_numeric(frame[column], errors="coerce")
+    if not values.notna().any():
+        return frame.iloc[0:0].copy(), "No measurements are available for this local signal; its map is left blank."
+    active = values.gt(0)
+    if not active.any():
+        return frame.iloc[0:0].copy(), "Measurements are loaded, but there are no above-baseline readings to map."
+    return frame.loc[active].copy(), None
+
+
 def find_predictor_script():
     for name in PREDICTOR_SCRIPT_CANDIDATES:
         path = ROOT_DIR / name
@@ -1522,8 +1540,8 @@ def add_derived_columns(df):
             df["heat_intensity"] = average_z_intensity(df, [temp_col])
             notes.append("Created heat_intensity proxy from temperature column.")
         else:
-            df["heat_intensity"] = 0.0
-            notes.append("No heat detection columns found.")
+            df["heat_intensity"] = np.nan
+            notes.append("No heat or temperature measurements found; heat values are unavailable.")
 
     # CO2
     co2_cols = find_matching_columns(
@@ -1537,17 +1555,17 @@ def add_derived_columns(df):
         notes.append(f"CO2 columns detected: {', '.join(co2_cols)}")
 
     else:
-        if df["fire_intensity"].abs().sum() > 0:
+        if df["fire_activity"].notna().any():
             df["co2_intensity"] = df["fire_intensity"] * 0.35
             notes.append(
                 "No CO2 columns found. "
                 "Created weak CO2 proxy from fire activity."
             )
         else:
-            df["co2_intensity"] = 0.0
+            df["co2_intensity"] = np.nan
             notes.append(
-                "No CO2 columns found. "
-                "Add OCO-2 / OCO-3 / GOSAT CO2 data for real CO2 tracking."
+                "No CO2 or fire measurements found; CO2 values are unavailable. "
+                "Add OCO-2 / OCO-3 / GOSAT data for real CO2 tracking."
             )
 
     # SMOKE
@@ -1562,12 +1580,12 @@ def add_derived_columns(df):
         notes.append(f"Smoke/aerosol columns detected: {', '.join(smoke_cols)}")
 
     else:
-        if df["fire_intensity"].abs().sum() > 0:
+        if df["fire_activity"].notna().any():
             df["smoke_intensity"] = df["fire_intensity"] * 0.75
             notes.append("Created smoke proxy from fire activity.")
         else:
-            df["smoke_intensity"] = 0.0
-            notes.append("No smoke/aerosol columns found.")
+            df["smoke_intensity"] = np.nan
+            notes.append("No smoke, aerosol, or fire measurements found; smoke values are unavailable.")
 
     # HAZE
     haze_cols = find_matching_columns(
@@ -1582,7 +1600,10 @@ def add_derived_columns(df):
 
     else:
         df["haze_intensity"] = df["smoke_intensity"]
-        notes.append("Using smoke signal as haze proxy.")
+        if df["smoke_intensity"].notna().any():
+            notes.append("Using smoke signal as haze proxy.")
+        else:
+            notes.append("No haze, smoke, or aerosol measurements found; haze values are unavailable.")
 
     # FLOOD
     flood_cols = find_matching_columns(
@@ -1614,8 +1635,8 @@ def add_derived_columns(df):
             df["flood_intensity"] = average_z_intensity(df, proxy_cols)
             notes.append("Created flood proxy from precipitation/soil moisture.")
         else:
-            df["flood_intensity"] = 0.0
-            notes.append("No flood detection columns found.")
+            df["flood_intensity"] = np.nan
+            notes.append("No flood, river, rainfall, or soil-moisture measurements found; flood values are unavailable.")
 
     # EMERGENCY SIGNAL
     emergency_cols = find_matching_columns(
@@ -1822,7 +1843,8 @@ def build_region_registry(raw_data, point_summary, risk_latest):
     if not parts:
         return pd.DataFrame(columns=[
             "region", "lat", "lon", "rows", "emergency_labels",
-            "fire_intensity", "latest_risk",
+            "fire_intensity", "heat_intensity", "smoke_intensity",
+            "haze_intensity", "flood_intensity", "co2_intensity", "latest_risk",
         ])
 
     registry = parts[0]
@@ -1838,10 +1860,19 @@ def build_region_registry(raw_data, point_summary, risk_latest):
         registry[col] = observed.combine_first(saved)
         registry = registry.drop(columns=[observed_col, coord_col], errors="ignore")
 
-    for col in ("rows", "emergency_labels", "fire_intensity"):
+    for col in ("rows", "emergency_labels"):
         if col not in registry.columns:
             registry[col] = 0
         registry[col] = registry[col].fillna(0)
+
+    # Missing measurements stay missing. Zero would look like a measured
+    # baseline and can turn into a misleading map layer.
+    for col in (
+        "fire_intensity", "heat_intensity", "smoke_intensity",
+        "haze_intensity", "flood_intensity", "co2_intensity",
+    ):
+        if col not in registry.columns:
+            registry[col] = np.nan
 
     if "latest_risk" not in registry.columns:
         registry["latest_risk"] = np.nan
@@ -2848,7 +2879,7 @@ if firms_is_live and firms_df is not None:
             latest_frame = new_detections.iloc[[0]]
             place = country_labels_for_points(latest_frame, country_boundaries).iloc[0]
             coordinates = f"{float(latest['lat']):.2f}, {float(latest['lon']):.2f}"
-            location = f"{place} ({coordinates})"
+            location = coordinates if place == "Unknown area" else f"{place} ({coordinates})"
             scope_label = ", ".join(selected_countries) if country_scope_active else "all countries"
             if fire_alerts_enabled:
                 st.toast(
@@ -3143,7 +3174,9 @@ with tab_global_map:
     else:
         base_map = None
 
-        if point_summary is not None and not point_summary.empty:
+        if layer in LOCAL_PROXY_LAYERS and registry is not None and not registry.empty:
+            base_map = registry.copy()
+        elif point_summary is not None and not point_summary.empty:
             base_map = point_summary.copy()
         elif registry is not None and not registry.empty:
             base_map = registry.copy()
@@ -3207,7 +3240,13 @@ with tab_global_map:
                 size = "co2_intensity"
                 color_scale = "Greens"
 
-            if color and color not in base_map.columns:
+            proxy_status = None
+            if color in LOCAL_PROXY_COLUMNS:
+                base_map, proxy_status = filter_to_available_proxy_signal(base_map, color)
+
+            if proxy_status:
+                st.info(proxy_status)
+            elif color and color not in base_map.columns:
                 st.info("Selected layer is not available in local data.")
 
             else:
@@ -3406,55 +3445,61 @@ with tab_local_hazards:
 
             st.markdown(f"### {selected_hazard} Locations")
 
-            if point_summary is not None and col in point_summary.columns:
-                top_points = point_summary.sort_values(col, ascending=False).head(100)
-                top_points = filter_points_to_country_scope(
-                    top_points, selected_countries,
-                    country_scope_mode == "Selected countries", country_boundaries,
-                )
-                if top_points.empty:
-                    st.info("No locations for this signal are in the selected countries.")
-                st.caption(f"Showing the strongest {len(top_points):,} mapped locations for this signal.")
-                with st.expander("Browse location records"):
-                    st.dataframe(top_points, width="stretch")
-
-                map_df = top_points.dropna(subset=["lat", "lon"])
-
-                if not map_df.empty:
-                    map_view = st.radio(
-                        "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
-                        index=2, horizontal=True, key=f"local_{col}_map_view",
+            if point_summary is None or col not in point_summary.columns:
+                st.info(f"No {selected_hazard.lower()} location data is available in the loaded local files.")
+            else:
+                top_points, proxy_status = filter_to_available_proxy_signal(point_summary, col)
+                if proxy_status:
+                    st.info(proxy_status)
+                else:
+                    top_points = top_points.sort_values(col, ascending=False).head(100)
+                    top_points = filter_points_to_country_scope(
+                        top_points, selected_countries,
+                        country_scope_mode == "Selected countries", country_boundaries,
                     )
-                    if map_view != "Globe / flat map":
-                        render_leaflet_points(map_df, color_by=col, popup_columns=["region", col],
-                                              height=560, thermal=map_view == "Soft heat map",
-                                              key=f"map_local_hazard_{col}_leaflet")
+                    if top_points.empty:
+                        st.info("No locations for this signal are in the selected countries.")
                     else:
-                        map_style = st.radio(
-                            "Map style", ["Globe", "Flat world"], horizontal=True,
-                            key=f"local_{col}_map_style"
-                        )
-                        projection = "orthographic" if map_style == "Globe" else "natural earth"
+                        st.caption(f"Showing the strongest {len(top_points):,} mapped locations for this signal.")
+                        with st.expander("Browse location records"):
+                            st.dataframe(top_points, width="stretch")
 
-                        fig = scatter_geo_safe(
-                            map_df,
-                            lat="lat",
-                            lon="lon",
-                            color=col,
-                            size=col,
-                            hover_name="region",
-                            projection=projection,
-                            color_continuous_scale=color_scale,
-                            height=560,
-                        )
+                        map_df = top_points.dropna(subset=["lat", "lon"])
+                        if not map_df.empty:
+                            map_view = st.radio(
+                                "Map view", ["Globe / flat map", "Interactive tile map", "Soft heat map"],
+                                index=2, horizontal=True, key=f"local_{col}_map_view",
+                            )
+                            if map_view != "Globe / flat map":
+                                render_leaflet_points(map_df, color_by=col, popup_columns=["region", col],
+                                                      height=560, thermal=map_view == "Soft heat map",
+                                                      key=f"map_local_hazard_{col}_leaflet")
+                            else:
+                                map_style = st.radio(
+                                    "Map style", ["Globe", "Flat world"], horizontal=True,
+                                    key=f"local_{col}_map_style"
+                                )
+                                projection = "orthographic" if map_style == "Globe" else "natural earth"
 
-                        fig = make_geo_fig(fig)
-                        st.plotly_chart(
-                            fig,
-                            width="stretch",
-                            config={"responsive": True, "scrollZoom": True, "displayModeBar": True, "displaylogo": False},
-                            key="map_local_hazard",
-                        )
+                                fig = scatter_geo_safe(
+                                    map_df,
+                                    lat="lat",
+                                    lon="lon",
+                                    color=col,
+                                    size=col,
+                                    hover_name="region",
+                                    projection=projection,
+                                    color_continuous_scale=color_scale,
+                                    height=560,
+                                )
+
+                                fig = make_geo_fig(fig)
+                                st.plotly_chart(
+                                    fig,
+                                    width="stretch",
+                                    config={"responsive": True, "scrollZoom": True, "displayModeBar": True, "displaylogo": False},
+                                    key="map_local_hazard",
+                                )
 
 
 # ============================================================
