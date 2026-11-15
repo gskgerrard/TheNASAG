@@ -1000,7 +1000,8 @@ const resizeGibsMap=()=>map.invalidateSize({pan:false});requestAnimationFrame(()
 
 def render_leaflet_points(data_frame, *, color_by=None, category_colors=None,
                           popup_columns=None, height=520, point_limit=2000, thermal=False,
-                          pixel_size_meters=1000, key="map", focus_bounds=None):
+                          pixel_size_meters=1000, thermal_min_radius_pixels=5,
+                          fit_to_points=False, key="map", focus_bounds=None):
     """Render touch-friendly markers and, optionally, an aggregated thermal surface."""
     if focus_bounds is None:
         focus_bounds = globals().get("country_focus_bounds")
@@ -1091,11 +1092,12 @@ html,body,#map{{height:100%;width:100%;margin:0;background:#071426}}.leaflet-con
 </style></head><body><div id="map"></div><div class="map-note">__NOTE____LEGEND__</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
 const rows={payload}; const thermalCells={surface_payload}; const thermalRadiusMeters={surface_radius_meters};
+const thermalMinRadiusPixels={float(thermal_min_radius_pixels)}; const fitToPoints={str(fit_to_points).lower()};
 const fireSurface={str(color_by in {"frp", "fire_intensity", "fire_risk_proxy", "latest_risk"}).lower()};
 const thermal={str(thermal).lower()};
 const focusBounds={json.dumps(focus_bounds)};
 const map=L.map('map',{{zoomControl:false,tap:true,scrollWheelZoom:true,worldCopyJump:false,minZoom:1}});
-if(focusBounds)map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]],{{padding:[8,8],maxZoom:10}});else map.setView([18,0],1.6);
+if(fitToPoints&&rows.length){{const points=L.latLngBounds(rows.map(item=>[item.lat,item.lon]));if(points.getNorthEast().equals(points.getSouthWest()))map.setView(points.getCenter(),5);else map.fitBounds(points,{{padding:[24,24],maxZoom:5}})}}else if(focusBounds)map.fitBounds([[focusBounds[1],focusBounds[0]],[focusBounds[3],focusBounds[2]]],{{padding:[8,8],maxZoom:10}});else map.setView([18,0],1.6);
 L.control.zoom({{position:'topright'}}).addTo(map);
 const baseTiles=L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{minZoom:1,maxZoom:19,noWrap:true,bounds:[[-85,-180],[85,180]],attribution:'&copy; OpenStreetMap contributors'}});
 let baseTileErrors=0, fallbackBaseAdded=false;
@@ -1109,7 +1111,7 @@ if(thermalCells.length){{
    // Draw localized supported values; the surface does not invent values between distant points.
    heatCtx.globalCompositeOperation='source-over';
   // Scale each heat mark with the map zoom so nearby views show larger footprints.
-  const cellRadius=cell=>{{const zoomScale=Math.pow(2,zoom-5),supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.max(5,12*zoomScale*supportScale);return fireSurface?Math.min(72,baseRadius):Math.min(60,baseRadius)}};
+  const cellRadius=cell=>{{const zoomScale=Math.pow(2,zoom-5),supportScale=fireSurface?1+Math.min(.4,Math.max(0,cell.support-2)*.08):1,baseRadius=Math.max(thermalMinRadiusPixels,12*zoomScale*supportScale);return fireSurface?Math.min(72,baseRadius):Math.min(60,baseRadius)}};
   for(const cell of thermalCells){{const p=this._map.latLngToLayerPoint([cell.lat,cell.lon]).subtract(origin),r=cellRadius(cell);if(p.x < -r || p.y < -r || p.x > size.x+r || p.y > size.y+r)continue;const grad=heatCtx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);grad.addColorStop(0,cell.color+'bb');grad.addColorStop(.42,cell.color+'65');grad.addColorStop(1,cell.color+'00');heatCtx.globalAlpha=cell.strength*(fireSurface ? 0.7 : 1);heatCtx.fillStyle=grad;heatCtx.beginPath();heatCtx.arc(p.x,p.y,r,0,Math.PI*2);heatCtx.fill()}}heatCtx.globalAlpha=1;heatCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.filter='blur(5px)';ctx.drawImage(heatCanvas,0,0);ctx.filter='none';ctx.restore()}}
  }});
  new ThermalSurface().addTo(map);
@@ -3532,6 +3534,7 @@ with tab_local_hazards:
                             if map_view != "Globe / flat map":
                                 render_leaflet_points(map_df, color_by=col, popup_columns=["region", col],
                                                       height=560, thermal=map_view == "Soft heat map",
+                                                      thermal_min_radius_pixels=14, fit_to_points=True,
                                                       key=f"map_local_hazard_{col}_leaflet")
                             else:
                                 map_style = st.radio(
