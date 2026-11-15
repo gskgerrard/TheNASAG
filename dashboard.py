@@ -563,6 +563,15 @@ def current_user_logged_in():
         return False
 
 
+def current_phone_user():
+    """Return the phone number verified for this active Streamlit session."""
+    return st.session_state.get("phone_signin_verified_number", "")
+
+
+def account_is_logged_in():
+    return current_user_logged_in() or bool(current_phone_user())
+
+
 @st.dialog("Your Earth Emergency Command account")
 def show_login_dialog():
     if current_user_logged_in():
@@ -570,14 +579,61 @@ def show_login_dialog():
         st.success(f"You’re signed in as {user_name}.")
         if st.button("Log out", key="login_dialog_logout", width="stretch"):
             st.logout()
-    elif oidc_login_configured() and hasattr(st, "login"):
-        st.write("Sign in is optional. Continue with the account configured for this app.")
-        if st.button("Continue to sign in", type="primary", key="login_dialog_continue", width="stretch"):
+        return
+    if current_phone_user():
+        st.success(f"Phone verified for this session: {current_phone_user()}")
+        if st.button("Log out", key="phone_login_dialog_logout", width="stretch"):
+            st.session_state.pop("phone_signin_verified_number", None)
+            st.rerun()
+        return
+
+    if oidc_login_configured() and hasattr(st, "login"):
+        st.write("Sign in with Google or verify your phone number.")
+        if st.button("Continue with Google", type="primary", key="login_dialog_continue", width="stretch"):
             st.login()
     else:
-        st.write("Sign in is optional. It becomes available after an OpenID Connect provider is added to the app’s Streamlit secrets.")
-        st.code('[auth]\nredirect_uri = "https://testnasa123.streamlit.app/oauth2callback"\ncookie_secret = "<long random secret>"\nclient_id = "<provider client ID>"\nclient_secret = "<provider client secret>"\nserver_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"', language="toml")
-        st.caption("Add this in Streamlit Cloud → app settings → Secrets. Create the client ID with the matching redirect URL in your identity provider. For local use, change redirect_uri to http://localhost:8501/oauth2callback.")
+        with st.expander("Optional Google sign-in setup"):
+            st.caption("Google sign-in needs an OpenID Connect provider in Streamlit secrets.")
+            st.code('[auth]\nredirect_uri = "https://testnasa123.streamlit.app/oauth2callback"\ncookie_secret = "<long random secret>"\nclient_id = "<provider client ID>"\nclient_secret = "<provider client secret>"\nserver_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"', language="toml")
+            st.caption("For local use, change redirect_uri to http://localhost:8501/oauth2callback.")
+
+    st.markdown("#### Sign in with your phone")
+    st.caption("We’ll text a one-time code. Your verified sign-in lasts for this browser session.")
+    with st.expander("Phone sign-in setup"):
+        st.caption("The app owner must create a Twilio Verify Service and add these private values in Streamlit Secrets:")
+        st.code('[twilio]\nTWILIO_ACCOUNT_SID = "AC..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_VERIFY_SERVICE_SID = "VA..."', language="toml")
+    phone_value = st.text_input(
+        "Phone number with country code",
+        placeholder="+1 555 123 4567",
+        key="phone_signin_number",
+    )
+    normalized_phone = normalize_phone_number(phone_value)
+    if st.button("Text me a verification code", key="phone_signin_send_code"):
+        if not normalized_phone:
+            st.warning("Enter a valid number in international format, starting with + and the country code.")
+        else:
+            sent, message = start_phone_verification(normalized_phone)
+            if sent:
+                st.session_state["phone_signin_pending_number"] = normalized_phone
+                st.success("Verification code sent. It expires after 10 minutes.")
+            else:
+                st.error(message)
+
+    pending_phone = st.session_state.get("phone_signin_pending_number", "")
+    if pending_phone:
+        st.caption(f"Enter the code sent to {pending_phone}.")
+        verification_code = st.text_input("Verification code", key="phone_signin_code", max_chars=10)
+        if st.button("Verify and sign in", type="primary", key="phone_signin_verify"):
+            if not verification_code.strip():
+                st.warning("Enter the verification code from your text message.")
+            else:
+                verified, message = check_phone_verification(pending_phone, verification_code.strip())
+                if verified:
+                    st.session_state["phone_signin_verified_number"] = pending_phone
+                    st.session_state.pop("phone_signin_pending_number", None)
+                    st.success("Phone verified. You’re signed in for this session.")
+                else:
+                    st.error(message)
 
 
 # ============================================================
@@ -2212,9 +2268,72 @@ def get_alert_secret(name, default=""):
     if value:
         return value
     try:
-        return str(st.secrets.get(name, default)).strip()
+        direct_value = st.secrets.get(name)
+        if direct_value:
+            return str(direct_value).strip()
+        twilio_settings = st.secrets.get("twilio", {})
+        return str(twilio_settings.get(name, default)).strip()
     except Exception:
         return default
+
+
+def normalize_phone_number(value):
+    """Normalize common phone formatting to Twilio's E.164 form."""
+    raw_value = str(value or "").strip()
+    if not raw_value.startswith("+"):
+        return None
+    digits = "".join(character for character in raw_value if character.isdigit())
+    if not 8 <= len(digits) <= 15 or digits.startswith("0"):
+        return None
+    return f"+{digits}"
+
+
+def twilio_verify_settings():
+    return (
+        get_alert_secret("TWILIO_ACCOUNT_SID"),
+        get_alert_secret("TWILIO_AUTH_TOKEN"),
+        get_alert_secret("TWILIO_VERIFY_SERVICE_SID"),
+    )
+
+
+def start_phone_verification(phone_number):
+    account, token, service = twilio_verify_settings()
+    if not HAS_REQUESTS:
+        return False, "Phone sign-in needs the requests package."
+    if not all([account, token, service]):
+        return False, "Phone sign-in is not set up yet. Add the Twilio account SID, auth token, and Verify Service SID in app secrets."
+    try:
+        response = requests.post(
+            f"https://verify.twilio.com/v2/Services/{service}/Verifications",
+            data={"To": phone_number, "Channel": "sms"},
+            auth=(account, token),
+            timeout=15,
+        )
+        response.raise_for_status()
+        if response.json().get("status") == "pending":
+            return True, None
+        return False, "Twilio did not start the phone verification. Check the Verify service settings."
+    except Exception:
+        return False, "Could not send the verification code. Check the Twilio settings and try again."
+
+
+def check_phone_verification(phone_number, code):
+    account, token, service = twilio_verify_settings()
+    if not all([account, token, service]):
+        return False, "Phone sign-in is not set up yet. Add the Twilio account SID, auth token, and Verify Service SID in app secrets."
+    try:
+        response = requests.post(
+            f"https://verify.twilio.com/v2/Services/{service}/VerificationCheck",
+            data={"To": phone_number, "Code": code},
+            auth=(account, token),
+            timeout=15,
+        )
+        response.raise_for_status()
+        if response.json().get("status") == "approved":
+            return True, None
+        return False, "That code was not accepted. Check it and try again before it expires."
+    except Exception:
+        return False, "Could not verify the code. It may have expired, or the Twilio settings may need checking."
 
 
 def send_aqi_email(recipient, subject, body):
@@ -2313,7 +2432,7 @@ st.markdown(
 )
 
 with st.container(key="floating_login"):
-    account_button_label = "👤 Account" if current_user_logged_in() else "👤 Log in"
+    account_button_label = "👤 Account" if account_is_logged_in() else "👤 Log in"
     if st.button(account_button_label, key="floating_login_button"):
         show_login_dialog()
 
@@ -2444,8 +2563,30 @@ with st.sidebar:
         value=True,
         help="A popup appears when a live FIRMS refresh includes detections not seen in the previous refresh. The first live load sets the baseline."
     )
+    fire_sms_enabled = st.checkbox(
+        "Text me when new fires are detected",
+        key="fire_alert_sms_enabled",
+        help="Sends one text for each refresh batch with new detections in your selected country scope. Requires Twilio messaging settings."
+    )
+    fire_alert_phone = ""
+    if fire_sms_enabled:
+        fire_alert_phone = st.text_input(
+            "Fire alert phone number (include country code)",
+            placeholder="+1 555 123 4567",
+            key="fire_alert_phone",
+        ).strip()
     if st.button("Send test popup", help="Shows a sample notification without contacting NASA or changing your alert baseline."):
         st.toast("🔥 Test popup: fire alerts are working.", icon="🔥")
+    if fire_sms_enabled and st.button("Send test fire text", key="test_fire_sms"):
+        test_phone = normalize_phone_number(fire_alert_phone)
+        if not test_phone:
+            st.warning("Enter a valid number in international format, starting with + and the country code.")
+        else:
+            sent, error = send_aqi_sms(test_phone, "Earth Emergency Command test: fire alert texts are working.")
+            if sent:
+                st.success("Test text sent.")
+            else:
+                st.error(error)
     country_boundaries = load_country_boundaries()
     available_countries = sorted({item["name"] for item in country_boundaries})
     country_scope_mode = st.radio(
@@ -2499,6 +2640,11 @@ with st.sidebar:
             st.caption(f"Signed in as {account_label}")
             if st.button("Log out", key="settings_logout", width="stretch"):
                 st.logout()
+        elif current_phone_user():
+            st.caption(f"Phone verified for this session: {current_phone_user()}")
+            if st.button("Log out", key="settings_phone_logout", width="stretch"):
+                st.session_state.pop("phone_signin_verified_number", None)
+                st.rerun()
         else:
             st.caption("Signing in is optional.")
             if st.button("Log in", key="settings_login", width="stretch"):
@@ -2624,7 +2770,7 @@ if firms_is_live and firms_df is not None:
     current_ids = set(alert_ids.tolist())
     is_first_live_snapshot = feed_key not in seen_by_feed
 
-    if fire_alerts_enabled and not is_first_live_snapshot and not alert_ids.empty:
+    if not is_first_live_snapshot and not alert_ids.empty:
         newly_seen = ~alert_ids.isin(previous_ids)
         new_detections = firms_df.loc[newly_seen].copy()
         country_scope_active = country_scope_mode == "Selected countries"
@@ -2640,10 +2786,25 @@ if firms_is_live and firms_df is not None:
             coordinates = f"{float(latest['lat']):.2f}, {float(latest['lon']):.2f}"
             location = f"{place} ({coordinates})"
             scope_label = ", ".join(selected_countries) if country_scope_active else "all countries"
-            st.toast(
-                f"🔥 {len(new_detections):,} new fire detection(s) in {scope_label}. Latest location: {location}.",
-                icon="🔥",
-            )
+            if fire_alerts_enabled:
+                st.toast(
+                    f"🔥 {len(new_detections):,} new fire detection(s) in {scope_label}. Latest location: {location}.",
+                    icon="🔥",
+                )
+            if fire_sms_enabled:
+                sms_phone = normalize_phone_number(fire_alert_phone)
+                if sms_phone:
+                    fire_message = (
+                        f"Earth Emergency Command: {len(new_detections):,} new FIRMS fire detection(s) "
+                        f"in {scope_label}. Latest location: {location}. Detections are unconfirmed."
+                    )
+                    delivered, delivery_error = send_aqi_sms(sms_phone, fire_message)
+                    if delivered:
+                        st.toast("📱 Fire alert text sent.", icon="📱")
+                    else:
+                        st.warning(delivery_error)
+                else:
+                    st.warning("New fires were detected, but the fire alert phone number is missing or invalid.")
 
     # Keep a rolling baseline per satellite feed so detections do not alert again
     # on every automatic refresh. The limit bounds session memory on busy feeds.
@@ -3370,8 +3531,8 @@ with tab_atmosphere:
             st.text_input("Phone number (include country code)", placeholder="+1 555 123 4567", key="aqi_alert_phone")
         st.caption("AQI reminders follow the places in your watchlist worldwide. The map’s country filter only affects maps and new-fire alerts.")
         with st.expander("One-time provider setup"):
-            st.code('SMTP_HOST = "..."\nSMTP_PORT = 587\nSMTP_USER = "..."\nSMTP_PASSWORD = "..."\nSMTP_FROM = "..."\nTWILIO_ACCOUNT_SID = "..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "..."', language="toml")
-            st.caption("Store these values in Streamlit secrets or environment variables. Never paste passwords here.")
+            st.code('SMTP_HOST = "..."\nSMTP_PORT = 587\nSMTP_USER = "..."\nSMTP_PASSWORD = "..."\nSMTP_FROM = "..."\n\n[twilio]\nTWILIO_ACCOUNT_SID = "..."\nTWILIO_AUTH_TOKEN = "..."\nTWILIO_FROM_NUMBER = "..."\nTWILIO_VERIFY_SERVICE_SID = "VA..."', language="toml")
+            st.caption("Use Twilio messaging settings for text alerts and a Twilio Verify Service SID for phone sign-in. Store credentials in Streamlit secrets or environment variables. Never paste passwords here.")
 
     alerts_active = (
         st.session_state.get("aqi_alert_email_enabled") and st.session_state.get("aqi_alert_email", "").strip()
